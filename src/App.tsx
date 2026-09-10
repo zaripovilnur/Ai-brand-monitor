@@ -305,7 +305,7 @@ function Settings({ api, setApi, judgePrompt, saveJudge, promptVer, defaultJudge
   const field = (label: string, key: "provider" | "baseUrl", ph: string, hint?: string) => (
     <div style={{ marginBottom: 20 }}>
       <label style={{ display: "block", fontSize: 13, color: T.muted, marginBottom: 6 }}>{label}</label>
-      <input value={api[key]} placeholder={ph} onChange={(e) => setApi({ ...api, [key]: e.target.value })} style={{ width: "100%" }} />
+      <input value={api[key]} placeholder={ph} readOnly style={{ width: "100%" }} />
       {hint && <p style={{ fontSize: 12, color: T.faint, margin: "6px 0 0", lineHeight: 1.5 }}>{hint}</p>}
     </div>
   );
