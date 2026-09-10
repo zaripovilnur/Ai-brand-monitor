@@ -409,22 +409,6 @@ function Settings({ api, setApi, judgePrompt, saveJudge, promptVer, defaultJudge
         </span>
       </label>
 
-      <label style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 10, cursor: "pointer" }}>
-        <input type="checkbox" checked={api.fallback} onChange={(e) => setApi({ ...api, fallback: e.target.checked })} style={{ padding: 0, marginTop: 3 }} />
-        <span>
-          <span style={{ fontSize: 14 }}>Разрешить запасные модели</span>
-          <span style={{ display: "block", fontSize: 12, color: T.faint, marginTop: 3, maxWidth: "62ch", lineHeight: 1.6 }}>
-            При отказе провайдера запрос уйдёт другой модели. Для обычных задач удобно, для замера — нет.
-          </span>
-        </span>
-      </label>
-
-      {api.fallback && (
-        <div style={{ background: "#FBEDEC", border: "1px solid #F0D7D4", borderRadius: 8, padding: "12px 16px", marginBottom: 10, fontSize: 13, color: T.neg, lineHeight: 1.6, maxWidth: "70ch" }}>
-          В отчёт попадут ответы не той модели, которая указана в колонке. Метрики по моделям станут недостоверными.
-        </div>
-      )}
-
       <h2 style={{ font: `400 18px ${SANS}`, margin: "40px 0 8px" }}>Промпт судьи</h2>
       <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px", maxWidth: "70ch", lineHeight: 1.6 }}>
         Подстановки в фигурных скобках заполняются автоматически: {"{brand}"}, {"{aliases}"}, {"{competitors}"}, {"{facts}"}, {"{prompt}"}, {"{answer}"}.
@@ -902,7 +886,10 @@ export default function App() {
 
   const nav = [
     { group: "Отчёт", items: [["dash", "Дашборд"], ["answers", "Ответы"]] },
-    { group: "Настройка", items: [["prompts", "Запросы"], ["facts", "База фактов"], ["brand", "Бренд"]] },
+    {
+      group: "Настройка",
+      items: [["prompts", "Запросы"], ["facts", "База фактов"], ["brand", "Бренд"], ["settings", "Подключение"]],
+    },
   ];
 
   if (!brand || !api) return null;
