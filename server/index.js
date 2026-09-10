@@ -265,7 +265,8 @@ app.post('/api/test-connection', async (req, res) => {
 // --- Прогоны ---
 
 app.get('/api/runs', (req, res) => {
-  res.json(listRuns());
+  // rows=1 — вместе с размеченными ответами: их ждут дашборд и лента ответов
+  res.json(listRuns({ withRows: req.query.rows === '1' }));
 });
 
 app.post('/api/runs', (req, res) => {
@@ -284,7 +285,7 @@ app.post('/api/runs', (req, res) => {
 });
 
 app.get('/api/runs/:id', (req, res) => {
-  const run = getRun(req.params.id);
+  const run = getRun(req.params.id, { withRows: req.query.rows === '1' });
   if (!run) return res.status(404).json({ error: 'Прогон не найден.' });
   res.json(run);
 });

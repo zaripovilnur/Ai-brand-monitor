@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import * as XLSX from "xlsx";
 
 // Интерфейс перенесён из prototype/ai-brand-monitor.jsx.
 // Вёрстка, цвета, шрифты и тексты — как в прототипе. Отличие одно:
@@ -50,7 +52,18 @@ const SCALE = {
   ],
 };
 
+const LBL: Record<string, string> = {};
+Object.values(SCALE).forEach((arr) => arr.forEach((x) => (LBL[x.k] = x.label)));
+
+const LINE = [
+  { c: "#3D3BD6", dash: "0" },
+  { c: "#C4643A", dash: "5 4" },
+  { c: "#2E7D5B", dash: "2 3" },
+];
+
 const CAT_COLOR: Record<string, string> = { brand: "#3D3BD6", category: "#2E7D5B", competitive: "#C4643A", info: "#8C8C93" };
+
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function plural(n: number, one: string, few: string, many: string) {
   const a = Math.abs(n) % 100;
@@ -82,6 +95,70 @@ type BtnProps = {
 type FactsProps = { facts: Fact[]; onAdd: (text: string) => void; onDelete: (id: number) => void };
 type BrandSetupProps = { brand: Brand; setBrand: (next: Brand) => void };
 type Model = { id: string; name: string; api: string };
+type ScaleItem = { k: string; label: string; c: string };
+type ScaleField = "position" | "accuracy" | "tone" | "strength";
+type Dist = { counts: Record<string, number>; base: number; items: (ScaleItem & { n: number; pct: number })[] };
+type Row = {
+  id: string;
+  promptId: number;
+  cat: string;
+  model: string;
+  repeat: number;
+  mention: string | null;
+  position: string | null;
+  accuracy: string | null;
+  tone: string | null;
+  strength: string | null;
+  evidence: string | null;
+  note: string | null;
+  judgeError: string | null;
+  text: string;
+};
+type RunPrompt = { id: number; text: string; cat: string };
+type RunPickerProps = { run: RunFull; runs: RunFull[]; setRunId: (id: number) => void; note?: string };
+type KpiProps = {
+  label: string;
+  value: number | string;
+  suffix?: string;
+  lead: string;
+  base: string;
+  size?: number;
+  alarm?: boolean;
+  first?: boolean;
+  delta?: number;
+};
+type BarsProps = { title: string; d: Dist; note?: string };
+type HighlightProps = { text: string; brand: string; comps: string[] };
+type DashboardProps = {
+  run: RunFull;
+  runs: RunFull[];
+  setRunId: (id: number) => void;
+  slice: string;
+  setSlice: (s: string) => void;
+  onGo: (tab: string) => void;
+  fModel: string;
+  setFModel: (m: string) => void;
+  setFCat: (c: string) => void;
+  setFMiss: (v: boolean) => void;
+  MODELS: Model[];
+};
+type AnswersProps = {
+  run: RunFull;
+  runs: RunFull[];
+  setRunId: (id: number) => void;
+  brand: Brand;
+  prompts: Prompt[];
+  facts: Fact[];
+  fModel: string;
+  setFModel: (m: string) => void;
+  fCat: string;
+  setFCat: (c: string) => void;
+  fMiss: boolean;
+  setFMiss: (v: boolean) => void;
+  open: Record<string, boolean>;
+  setOpen: (next: Record<string, boolean>) => void;
+  MODELS: Model[];
+};
 type ApiSettings = {
   provider: string;
   baseUrl: string;
@@ -102,6 +179,15 @@ type Run = {
   done: number;
   failed: number;
   cost_rub: number;
+};
+type RunFull = Run & {
+  short: string;
+  repeats: number;
+  promptVer: number;
+  judge_model: string;
+  models: string[];
+  prompts: RunPrompt[];
+  rows: Row[];
 };
 type NumProps = { value: number | string; suffix?: string; size?: number };
 type RunConfigProps = {
@@ -144,6 +230,40 @@ const send = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+function pctOf(d: Dist, key: string) {
+  const it = d.items.find((x) => x.k === key);
+  return it ? Math.round(it.pct) : 0;
+}
+
+function dist(rows: Row[], field: ScaleField, scale: ScaleItem[]): Dist {
+  const counts: Record<string, number> = {};
+  scale.forEach((s) => (counts[s.k] = 0));
+  let base = 0;
+  rows.forEach((r) => {
+    if (r[field] && counts[r[field]] !== undefined) {
+      counts[r[field]]++;
+      base++;
+    }
+  });
+  return { counts, base, items: scale.map((s) => ({ ...s, n: counts[s.k], pct: base ? (counts[s.k] / base) * 100 : 0 })) };
+}
+
+function agg(rows: Row[]) {
+  const n = rows.length;
+  const men = rows.filter((r) => r.mention === "yes");
+  return {
+    n,
+    men: men.length,
+    mentionPct: n ? (men.length / n) * 100 : 0,
+    position: dist(men, "position", SCALE.position),
+    accuracy: dist(men, "accuracy", SCALE.accuracy),
+    tone: dist(men, "tone", SCALE.tone),
+    strength: dist(men, "strength", SCALE.strength),
+    against: men.filter((r) => r.strength === "against").length,
+    wrong: men.filter((r) => r.accuracy === "wrong").length,
+  };
+}
+
 function Num({ value, suffix, size }: NumProps) {
   return (
     <span style={{ fontFamily: SERIF, fontSize: size || 32, lineHeight: 1.05, color: T.ink, fontVariantNumeric: "tabular-nums" }}>
@@ -153,9 +273,93 @@ function Num({ value, suffix, size }: NumProps) {
   );
 }
 
+function RunPicker({ run, runs, setRunId, note }: RunPickerProps) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <select value={run.id} onChange={(e) => setRunId(Number(e.target.value))} style={{ minWidth: 190 }}>
+        {[...runs].reverse().map((r, i) => (
+          <option key={r.id} value={r.id}>
+            Прогон от {r.at}
+            {i === 0 ? " — последний" : ""}
+          </option>
+        ))}
+      </select>
+      {note && <span style={{ fontSize: 12, color: T.warn, maxWidth: "56ch", lineHeight: 1.5 }}>{note}</span>}
+    </div>
+  );
+}
+
+function Kpi({ label, value, suffix, lead, base, size, alarm, first, delta }: KpiProps) {
+  return (
+    <div style={{ padding: first ? "0 20px 0 0" : "0 20px", flex: "1 1 168px", minWidth: 168, borderLeft: first ? "none" : `1px solid ${T.rule}` }}>
+      <div style={{ fontSize: 13, color: T.muted, marginBottom: 8 }}>{label}</div>
+      <Num value={value} suffix={suffix} size={size} />
+      <div style={{ fontSize: 12, color: T.ink, marginTop: 8 }}>
+        {lead}
+        {delta !== undefined && delta !== null && (
+          <span style={{ color: delta > 0 ? T.pos : delta < 0 ? T.neg : T.faint, marginLeft: 8 }}>
+            {delta > 0 ? "+" : ""}
+            {delta} п.п.
+          </span>
+        )}
+      </div>
+      <div style={{ fontSize: 12, color: alarm ? T.neg : T.faint, marginTop: 2, lineHeight: 1.5 }}>{base}</div>
+    </div>
+  );
+}
+
+function Bars({ title, d, note }: BarsProps) {
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, gap: 12, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 14 }}>{title}</span>
+        <span style={{ fontSize: 12, color: T.faint }}>{note || `база ${d.base}`}</span>
+      </div>
+      <div style={{ display: "flex", height: 22, borderRadius: 4, overflow: "hidden", background: "#F2F2EF" }}>
+        {d.items.map((it) =>
+          it.n === 0 ? null : <div key={it.k} style={{ width: `${it.pct}%`, background: it.c }} title={`${it.label}: ${it.n}`} />
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8, fontSize: 12, color: T.muted }}>
+        {d.items.map((it) => (
+          <span key={it.k} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: it.c }} />
+            {it.label} · {Math.round(it.pct)}%
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Dot({ cat }: { cat: string }) {
   const c = CAT_COLOR[cat] || T.faint;
   return <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: 3, background: c, marginRight: 8, verticalAlign: "middle" }} />;
+}
+
+function Highlight({ text, brand, comps }: HighlightProps) {
+  const terms = [brand, ...comps].map((t) => (t || "").trim()).filter(Boolean);
+  if (!terms.length) return <>{text}</>;
+  const re = new RegExp(`(${terms.map(escapeRe).join("|")})`, "gi");
+  return (
+    <>
+      {text.split(re).map((p, i) => {
+        if (p.toLowerCase() === brand.toLowerCase())
+          return (
+            <mark key={i} style={{ background: T.accentSoft, color: T.accent, padding: "1px 3px", borderRadius: 3 }}>
+              {p}
+            </mark>
+          );
+        if (comps.some((c) => c.toLowerCase() === p.toLowerCase()))
+          return (
+            <span key={i} style={{ borderBottom: `1px solid ${T.rule}` }}>
+              {p}
+            </span>
+          );
+        return <span key={i}>{p}</span>;
+      })}
+    </>
+  );
 }
 
 function Btn({ children, onClick, primary, small, disabled }: BtnProps) {
@@ -434,6 +638,622 @@ function Settings({ api, setApi, judgePrompt, saveJudge, promptVer, defaultJudge
           текущая версия {promptVer} · {draft.length} знаков
         </span>
       </div>
+    </div>
+  );
+}
+
+function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFModel, setFCat, setFMiss, MODELS }: DashboardProps) {
+  const inModel = (r: Row) => fModel === "all" || r.model === fModel;
+  const idx = runs.findIndex((r) => r.id === run.id);
+  const prev = idx > 0 ? runs[idx - 1] : null;
+  const sameSetup =
+    prev &&
+    prev.models.join() === run.models.join() &&
+    prev.repeats === run.repeats &&
+    prev.prompts.length === run.prompts.length &&
+    prev.promptVer === run.promptVer;
+  const setupNote = prev && !sameSetup ? "Настройки отличаются от предыдущего прогона — сравнение отключено." : "";
+  const prevAgg = prev && sameSetup ? agg(prev.rows.filter((r) => r.cat !== "brand" && inModel(r) && (slice === "all" || r.cat === slice))) : null;
+  const dl = (now: number, was: number | null | undefined) => (prevAgg ? Math.round(now - was!) : undefined);
+  // Тревоги считаются по всему прогону, а не по выбранной категории — иначе число прыгает при смене фильтра
+  const alerts = {
+    wrong: run.rows.filter((r) => inModel(r) && r.accuracy === "wrong").length,
+    against: run.rows.filter((r) => inModel(r) && r.strength === "against").length,
+  };
+  const nonBrand = run.rows.filter((r) => r.cat !== "brand" && inModel(r));
+  const scoped = slice === "all" ? nonBrand : nonBrand.filter((r) => r.cat === slice);
+  const a = useMemo(() => agg(scoped), [scoped]);
+  const b = useMemo(() => agg(run.rows.filter((r) => r.cat === "brand" && inModel(r))), [run, fModel]);
+  const counts: Record<string, number> = { all: nonBrand.length, category: 0, competitive: 0, info: 0 };
+  nonBrand.forEach((r) => counts[r.cat]++);
+
+  const brandPrompts = run.prompts.filter((p) => p.cat === "brand");
+
+  const weak = run.prompts
+    .filter((p) => p.cat !== "brand" && (slice === "all" || p.cat === slice))
+    .map((p) => {
+      const rs = run.rows.filter((r) => r.promptId === p.id && inModel(r));
+      return { p, v: rs.length ? rs.filter((r) => r.mention === "yes").length / rs.length : 0 };
+    })
+    .sort((x, y) => x.v - y.v)
+    .slice(0, 3);
+
+  useEffect(() => {
+    if (fModel !== "all" && !run.models.includes(fModel)) setFModel("all");
+  }, [run.id]);
+
+  const trend = runs.map((r) => {
+    const pt: Record<string, string | number | null> = { week: r.short };
+    MODELS.forEach((m) => {
+      const rs = r.rows.filter((x) => x.cat !== "brand" && x.model === m.id);
+      pt[m.id] = rs.length ? Math.round((rs.filter((x) => x.mention === "yes").length / rs.length) * 100) : null;
+    });
+    return pt;
+  });
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+        <h1 style={{ font: `400 26px ${SERIF}`, margin: 0 }}>Прогон от {run.at}</h1>
+        <RunPicker run={run} runs={runs} setRunId={setRunId} note={setupNote} />
+      </div>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 24px" }}>
+        {pl(run.prompts.length, "запрос", "запроса", "запросов")} · {pl(run.models.length, "модель", "модели", "моделей")} ·{" "}
+        {pl(run.repeats, "повтор", "повтора", "повторов")} · без веб-поиска · {pl(run.rows.length, "ответ", "ответа", "ответов")}
+        {fModel !== "all" && ` · показана только ${MODELS.find((x) => x.id === fModel)!.name}`}
+      </p>
+
+      {(alerts.against > 0 || alerts.wrong > 0) && (
+        <div style={{ background: "#FBEDEC", border: "1px solid #F0D7D4", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13, color: T.neg, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <span>
+            {[
+              alerts.wrong > 0 ? `неверное описание бренда в ${pl(alerts.wrong, "ответе", "ответах", "ответах")}` : null,
+              alerts.against > 0 ? `модель прямо не рекомендует бренд в ${pl(alerts.against, "ответе", "ответах", "ответах")}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          <button
+            onClick={() => { setFCat("all"); setFMiss(false); onGo("answers"); }}
+            style={{ border: "none", background: "none", padding: 0, cursor: "pointer", font: `13px ${SANS}`, color: T.neg, textDecoration: "underline" }}
+          >
+            Посмотреть
+          </button>
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0 14px", marginBottom: 18 }}>
+        <div>
+          <button className={"chip" + (fModel === "all" ? " on" : "")} onClick={() => setFModel("all")}>
+            Все модели
+          </button>
+          {run.models.map((id) => (
+            <button key={id} className={"chip" + (fModel === id ? " on" : "")} onClick={() => setFModel(id)}>
+              {MODELS.find((x) => x.id === id)!.name}
+            </button>
+          ))}
+        </div>
+        <div style={{ width: 1, height: 20, background: T.rule, marginBottom: 8 }} />
+        <div>
+          {[["all", "Все небрендовые"], ["category", CATS.category], ["competitive", CATS.competitive], ["info", CATS.info]].map(([id, label]) => (
+            <button key={id} className={"chip" + (slice === id ? " on" : "")} onClick={() => setSlice(id)}>
+              {label} <span style={{ color: T.faint }}>{counts[id]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "24px 0", borderTop: `1px solid ${T.rule}`, borderBottom: `1px solid ${T.rule}`, padding: "24px 0", marginBottom: 34 }}>
+        <Kpi
+          first
+          label="Факт упоминания"
+          value={Math.round(a.mentionPct)}
+          suffix="%"
+          lead="есть в ответе"
+          base={`${a.men} из ${pl(a.n, "ответа", "ответов", "ответов")}`}
+          delta={dl(a.mentionPct, prevAgg && prevAgg.mentionPct)}
+        />
+        <Kpi
+          label="Позиция"
+          value={pctOf(a.position, "first")}
+          suffix="%"
+          lead="первым"
+          base={`база ${a.position.base}`}
+          delta={dl(pctOf(a.position, "first"), prevAgg && pctOf(prevAgg.position, "first"))}
+        />
+        <Kpi
+          label="Точность"
+          value={pctOf(a.accuracy, "exact")}
+          suffix="%"
+          lead="точно"
+          base={a.wrong > 0 ? `${a.wrong} неверных · база ${a.accuracy.base}` : `база ${a.accuracy.base}`}
+          delta={dl(pctOf(a.accuracy, "exact"), prevAgg && pctOf(prevAgg.accuracy, "exact"))}
+        />
+        <Kpi
+          label="Тональность"
+          value={pctOf(a.tone, "positive")}
+          suffix="%"
+          lead="позитивная"
+          base={`база ${a.tone.base}`}
+          delta={dl(pctOf(a.tone, "positive"), prevAgg && pctOf(prevAgg.tone, "positive"))}
+        />
+        <Kpi
+          label="Сила рекомендации"
+          value={pctOf(a.strength, "strong")}
+          suffix="%"
+          lead="явно рекомендует"
+          base={a.against > 0 ? `${a.against} не рекомендует · база ${a.strength.base}` : `база ${a.strength.base}`}
+          delta={dl(pctOf(a.strength, "strong"), prevAgg && pctOf(prevAgg.strength, "strong"))}
+        />
+      </div>
+
+      <section style={{ marginBottom: 40 }}>
+        <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>Распределение оценок</h2>
+        <p style={{ fontSize: 13, color: T.muted, margin: "0 0 18px", maxWidth: "70ch" }}>
+          Все шкалы считаются только по ответам с упоминанием. Точность — по упоминаниям с проверяемым утверждением о компании.
+        </p>
+        <Bars title="Позиция в ответе" d={a.position} />
+        <Bars title="Точность описания" d={a.accuracy} />
+        <Bars title="Тональность" d={a.tone} />
+        <Bars title="Сила рекомендации" d={a.strength} />
+      </section>
+
+      <section style={{ marginBottom: 44 }}>
+        <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>Факт упоминания по неделям</h2>
+        <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px" }}>По всем небрендовым запросам · {pl(runs.length, "прогон", "прогона", "прогонов")} · разрыв линии означает, что модель в тот прогон не входила</p>
+        <div style={{ display: "flex", gap: 18, marginBottom: 12, fontSize: 12, color: T.muted, flexWrap: "wrap" }}>
+          {MODELS.map((m, i) => (
+            <span key={m.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <svg width="18" height="6" aria-hidden="true">
+                <line x1="0" y1="3" x2="18" y2="3" stroke={LINE[i].c} strokeWidth="2" strokeDasharray={LINE[i].dash} />
+              </svg>
+              {m.name}
+            </span>
+          ))}
+        </div>
+        <div style={{ height: 220, maxWidth: 720 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={trend} margin={{ top: 4, right: 8, bottom: 0, left: -18 }}>
+              <CartesianGrid stroke={T.rule} vertical={false} />
+              <XAxis dataKey="week" tick={{ fontSize: 12, fill: T.faint }} axisLine={{ stroke: T.rule }} tickLine={false} />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 12, fill: T.faint }} axisLine={false} tickLine={false} unit="%" />
+              <Tooltip contentStyle={{ fontSize: 13, borderRadius: 8, border: `1px solid ${T.rule}` }} formatter={(v, k) => [v + "%", MODELS.find((x) => x.id === k)?.name]} />
+              {MODELS.map((m, i) => {
+                const dim = fModel !== "all" && fModel !== m.id;
+                return (
+                  <Line
+                    key={m.id}
+                    type="monotone"
+                    dataKey={m.id}
+                    stroke={dim ? "#D8D8D3" : LINE[i].c}
+                    strokeWidth={dim ? 1.5 : 2}
+                    strokeDasharray={LINE[i].dash}
+                    dot={false}
+                    connectNulls={false}
+                  />
+                );
+              })}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+
+      <section style={{ marginBottom: 44 }}>
+        <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>Запросы и модели</h2>
+        <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px" }}>Доля повторов с упоминанием бренда, по небрендовым запросам</p>
+        <table style={{ fontSize: 13 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>Запрос</th>
+              {run.models.map((id) => (
+                <th key={id} style={{ width: 92, fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>
+                  {MODELS.find((x) => x.id === id)!.name}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {["category", "competitive", "info"].map((cat) => {
+              const ps = run.prompts.filter((p) => p.cat === cat);
+              if (!ps.length) return null;
+              return (
+                <React.Fragment key={cat}>
+                  <tr>
+                    <td colSpan={run.models.length + 1} style={{ padding: "18px 0 6px", fontSize: 12, color: T.faint }}>
+                      <Dot cat={cat} />
+                      {CATS[cat]}
+                    </td>
+                  </tr>
+                  {ps.map((p) => (
+                    <tr key={p.id} style={{ borderTop: `1px solid ${T.rule}` }}>
+                      <td style={{ padding: "9px 12px 9px 0" }}>{p.text}</td>
+                      {run.models.map((id) => {
+                        const rs = run.rows.filter((r) => r.promptId === p.id && r.model === id);
+                        const v = rs.length ? Math.round((rs.filter((r) => r.mention === "yes").length / rs.length) * 100) : 0;
+                        return (
+                          <td key={id} style={{ textAlign: "center", padding: 5 }}>
+                            <span style={{ display: "block", padding: "5px 0", borderRadius: 4, background: v === 0 ? "#F5F5F2" : `rgba(61,59,214,${(0.07 + (v / 100) * 0.42).toFixed(2)})`, color: v === 0 ? T.faint : T.ink, fontVariantNumeric: "tabular-nums" }}>
+                              {v}%
+                            </span>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      <section style={{ background: T.surface, border: `1px solid ${T.rule}`, borderRadius: 10, padding: "20px 26px", marginBottom: 44 }}>
+        <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>Где теряем сильнее всего</h2>
+        <p style={{ fontSize: 13, color: T.muted, margin: "0 0 14px" }}>
+          {slice === "all" ? "Небрендовые запросы с наименьшим упоминанием" : `${CATS[slice].toLowerCase()} запросы с наименьшим упоминанием`}
+        </p>
+        {weak.map(({ p, v }) => (
+          <div key={p.id} style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "9px 0", borderTop: `1px solid ${T.rule}` }}>
+            <span style={{ fontFamily: SERIF, fontSize: 17, width: 46, color: v === 0 ? T.neg : T.ink, fontVariantNumeric: "tabular-nums" }}>{Math.round(v * 100)}%</span>
+            <span style={{ fontSize: 14, flex: 1 }}>{p.text}</span>
+            <span style={{ fontSize: 12, color: T.faint }}>
+              <Dot cat={p.cat} />
+              {CATS[p.cat]}
+            </span>
+          </div>
+        ))}
+        <div style={{ marginTop: 16 }}>
+          <Btn small onClick={() => onGo("answers")}>
+            Посмотреть ответы
+          </Btn>
+        </div>
+      </section>
+
+      <section style={{ background: T.surface, border: `1px solid ${T.rule}`, borderRadius: 10, padding: "22px 26px" }}>
+        <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>
+          <Dot cat="brand" />
+          Брендовые запросы
+        </h2>
+        <p style={{ fontSize: 13, color: T.muted, margin: "0 0 20px", maxWidth: "70ch" }}>
+          Бренд назван в самом вопросе, поэтому факт упоминания, позиция и сила рекомендации здесь не считаются — они вырождаются. Значение имеет то, насколько верно модель описывает компанию.
+        </p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "20px 0", marginBottom: 24 }}>
+          <Kpi
+            first
+            label="Точность"
+            value={pctOf(b.accuracy, "exact")}
+            suffix="%"
+            lead="точно"
+            base={b.wrong > 0 ? `${pl(b.wrong, "ответ", "ответа", "ответов")} с неверным описанием` : `база ${b.accuracy.base}`}
+            size={28}
+            alarm={b.wrong > 0}
+          />
+          <Kpi label="Тональность" value={pctOf(b.tone, "positive")} suffix="%" lead="позитивная" base={`база ${b.tone.base}`} size={28} />
+          <Kpi
+            label="Неузнавание"
+            value={Math.round(100 - b.mentionPct)}
+            suffix="%"
+            lead="модель не знает компанию"
+            base={`${b.n - b.men} из ${pl(b.n, "ответа", "ответов", "ответов")}`}
+            size={28}
+            alarm={b.men < b.n}
+          />
+        </div>
+        <Bars title="Точность описания" d={b.accuracy} />
+        <Bars title="Тональность" d={b.tone} />
+
+        {brandPrompts.length > 0 && (
+          <>
+            <h3 style={{ font: `400 15px ${SANS}`, margin: "26px 0 4px" }}>Узнавание по запросам</h3>
+            <p style={{ fontSize: 13, color: T.muted, margin: "0 0 14px" }}>Доля повторов, где модель узнала компанию. Ниже 100% — модель не знает бренд или путает его с другим</p>
+            <table style={{ fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>Запрос</th>
+                  {run.models.map((id) => (
+                    <th key={id} style={{ width: 92, fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>
+                      {MODELS.find((x) => x.id === id)!.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {brandPrompts.map((p) => (
+                  <tr key={p.id} style={{ borderTop: `1px solid ${T.rule}` }}>
+                    <td style={{ padding: "9px 12px 9px 0" }}>{p.text}</td>
+                    {run.models.map((id) => {
+                      const rs = run.rows.filter((r) => r.promptId === p.id && r.model === id);
+                      const v = rs.length ? Math.round((rs.filter((r) => r.mention === "yes").length / rs.length) * 100) : null;
+                      return (
+                        <td key={id} style={{ textAlign: "center", padding: 5 }}>
+                          <span
+                            style={{
+                              display: "block",
+                              padding: "5px 0",
+                              borderRadius: 4,
+                              background: v === null ? "transparent" : v === 100 ? "#F2F2EF" : "#FBEDEC",
+                              color: v === null ? T.faint : v === 100 ? T.muted : T.neg,
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {v === null ? "—" : `${v}%`}
+                          </span>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function exportXlsx(rows: Row[], prompts: RunPrompt[], brand: Brand, runAt: string, MODELS: Model[]) {
+  const nameOf = (id: number) => prompts.find((p) => p.id === id)?.text || id;
+  const modelOf = (id: string) => MODELS.find((m) => m.id === id)?.name || id;
+
+  const answers = rows.map((r) => ({
+    "Дата прогона": runAt,
+    Категория: CATS[r.cat],
+    Запрос: nameOf(r.promptId),
+    Модель: modelOf(r.model),
+    Повтор: r.repeat,
+    "Факт упоминания": r.mention === "yes" ? "Есть" : "Нет",
+    Позиция: r.position ? LBL[r.position] : "",
+    Точность: r.accuracy ? LBL[r.accuracy] : "",
+    Тональность: r.mention === "yes" ? LBL[r.tone!] : "",
+    "Сила рекомендации": r.strength ? LBL[r.strength] : "",
+    "Ответ модели": r.text,
+  }));
+
+  const map = new Map<string, Row[]>();
+  rows.forEach((r) => {
+    const key = r.promptId + "|" + r.model;
+    if (!map.has(key)) map.set(key, []);
+    (map.get(key) as Row[]).push(r);
+  });
+  const summary = [...map.values()].map((reps) => {
+    const men = reps.filter((x) => x.mention === "yes").length;
+    const stable = new Set(reps.map((x) => `${x.mention}|${x.strength}|${x.accuracy}`)).size === 1;
+    return {
+      Категория: CATS[reps[0].cat],
+      Запрос: nameOf(reps[0].promptId),
+      Модель: modelOf(reps[0].model),
+      Повторов: reps.length,
+      Упоминаний: men,
+      "Доля упоминаний": reps.length ? Math.round((men / reps.length) * 100) / 100 : 0,
+      Стабильность: stable ? "Одинаковые ответы" : "Ответы различаются",
+    };
+  });
+
+  const wb = XLSX.utils.book_new();
+
+  const ws1 = XLSX.utils.json_to_sheet(answers);
+  ws1["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 46 }, { wch: 12 }, { wch: 8 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 100 }];
+  ws1["!views"] = [{ state: "frozen", ySplit: 1 }];
+  ws1["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: answers.length, c: 10 } }) };
+  XLSX.utils.book_append_sheet(wb, ws1, "Ответы");
+
+  const ws2 = XLSX.utils.json_to_sheet(summary);
+  ws2["!cols"] = [{ wch: 16 }, { wch: 46 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 16 }, { wch: 22 }];
+  ws2["!views"] = [{ state: "frozen", ySplit: 1 }];
+  XLSX.utils.book_append_sheet(wb, ws2, "Сводка");
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `${brand.name.toLowerCase()}-ai-monitoring-${stamp}.xlsx`);
+}
+
+const PER_PAGE = 50;
+
+function Answers({ run, runs, setRunId, brand, prompts, facts, fModel, setFModel, fCat, setFCat, fMiss, setFMiss, open, setOpen, MODELS }: AnswersProps) {
+  const [rep, setRep] = useState<Record<string, number>>({});
+  const [page, setPage] = useState(0);
+  const [err, setErr] = useState("");
+
+  // Сначала ищем в снимке прогона: запрос могли переименовать или удалить уже после него
+  const title = (id: number) => (run.prompts.find((p) => p.id === id) || prompts.find((p) => p.id === id) || {}).text || id;
+
+  const groups = useMemo(() => {
+    const map = new Map<string, Row[]>();
+    run.rows
+      .filter((r) => (fModel === "all" || r.model === fModel) && (fCat === "all" || r.cat === fCat))
+      .forEach((r) => {
+        const key = r.promptId + "|" + r.model;
+        if (!map.has(key)) map.set(key, []);
+        (map.get(key) as Row[]).push(r);
+      });
+    return [...map.entries()].map(([key, reps]) => ({ key, reps }));
+  }, [run, fModel, fCat]);
+
+  const shown = groups.filter((g) => !fMiss || g.reps.every((r) => r.mention === "no"));
+  const flat = shown.flatMap((g) => g.reps);
+  const pages = Math.max(1, Math.ceil(shown.length / PER_PAGE));
+  const current = Math.min(page, pages - 1);
+  const pageItems = shown.slice(current * PER_PAGE, current * PER_PAGE + PER_PAGE);
+
+  useEffect(() => {
+    setPage(0);
+  }, [fModel, fCat, fMiss, run.id]);
+
+  const verdict = (r: Row) =>
+    r.mention === "no"
+      ? { t: "не упомянут", bg: "#F6F1E9", c: T.warn, dot: "#E0D2BB" }
+      : r.accuracy === "wrong"
+      ? { t: "неверно", bg: "#FBEDEC", c: T.neg, dot: T.neg }
+      : r.strength === "against"
+      ? { t: "не рекомендует", bg: "#FBEDEC", c: T.neg, dot: T.neg }
+      : { t: r.cat === "brand" ? LBL[r.accuracy!] : LBL[r.strength!], bg: T.accentSoft, c: T.accent, dot: T.accent };
+
+  const toggle = (key: string, force?: boolean) => setOpen({ ...open, [key]: force !== undefined ? force : !open[key] });
+
+  return (
+    <div>
+      <h1 style={{ font: `400 26px ${SERIF}`, margin: "0 0 6px" }}>Ответы моделей</h1>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px", maxWidth: "72ch" }}>
+        Повторы одного запроса к одной модели собраны в карточку. Текст ответа раскрывается по клику.
+      </p>
+      <div style={{ marginBottom: 20 }}>
+        <RunPicker run={run} runs={runs} setRunId={setRunId} />
+      </div>
+
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 20, flexWrap: "wrap" }}>
+        <select value={fModel} onChange={(e) => setFModel(e.target.value)}>
+          <option value="all">Все модели</option>
+          {run.models.map((id) => (
+            <option key={id} value={id}>
+              {MODELS.find((x) => x.id === id)!.name}
+            </option>
+          ))}
+        </select>
+        <select value={fCat} onChange={(e) => setFCat(e.target.value)}>
+          <option value="all">Все категории</option>
+          {Object.entries(CATS).map(([k, v]) => (
+            <option key={k} value={k}>
+              {v}
+            </option>
+          ))}
+        </select>
+        <label style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 8, color: T.muted }}>
+          <input type="checkbox" checked={fMiss} onChange={(e) => setFMiss(e.target.checked)} style={{ padding: 0 }} />
+          Только где нас нет ни в одном повторе
+        </label>
+        <span style={{ fontSize: 13, color: T.faint, marginLeft: "auto" }}>
+          {pl(shown.length, "карточка", "карточки", "карточек")} · {pl(flat.length, "ответ", "ответа", "ответов")}
+        </span>
+        <Btn
+          small
+          onClick={() => {
+            try {
+              exportXlsx(flat, run.prompts, brand, run.at, MODELS);
+              setErr("");
+            } catch (e) {
+              setErr("Не удалось собрать файл. Попробуйте ещё раз.");
+            }
+          }}
+          disabled={flat.length === 0}
+        >
+          Выгрузить в Excel
+        </Btn>
+      </div>
+
+      {err && <p style={{ fontSize: 13, color: T.neg, margin: "-8px 0 16px" }}>{err}</p>}
+
+      {pageItems.map((g) => {
+        const idx = Math.min(rep[g.key] || 0, g.reps.length - 1);
+        const r = g.reps[idx];
+        const v = verdict(r);
+        const men = g.reps.filter((x) => x.mention === "yes").length;
+        const stable = new Set(g.reps.map((x) => `${x.mention}|${x.position}|${x.strength}|${x.accuracy}|${x.tone}`)).size === 1;
+        const isOpen = !!open[g.key];
+
+        return (
+          <article key={g.key} style={{ background: T.surface, border: `1px solid ${T.rule}`, borderRadius: 10, padding: "14px 20px", marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "baseline", marginBottom: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 14 }}>
+                <Dot cat={r.cat} />
+                {title(r.promptId)}
+              </span>
+              <span style={{ fontSize: 12, color: T.faint, marginLeft: "auto" }}>{MODELS.find((x) => x.id === r.model)!.name}</span>
+            </div>
+
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, color: T.muted }}>
+                упомянут в {men} из {g.reps.length}
+              </span>
+              {!stable && <span style={{ fontSize: 12, color: T.warn }}>ответы различаются</span>}
+              {stable && <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: v.bg, color: v.c }}>{v.t}</span>}
+
+              <span style={{ display: "flex", gap: 4, marginLeft: "auto", alignItems: "center" }}>
+                {g.reps.map((x, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { setRep({ ...rep, [g.key]: i }); toggle(g.key, true); }}
+                    aria-label={`Повтор ${i + 1}`}
+                    style={{
+                      font: `12px ${SANS}`,
+                      cursor: "pointer",
+                      width: 30,
+                      height: 26,
+                      borderRadius: 5,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 4,
+                      background: isOpen && i === idx ? T.accentSoft : T.surface,
+                      border: `1px solid ${isOpen && i === idx ? T.accent : T.rule}`,
+                      color: isOpen && i === idx ? T.accent : T.muted,
+                    }}
+                  >
+                    <span style={{ width: 5, height: 5, borderRadius: 3, background: verdict(x).dot }} />
+                    {i + 1}
+                  </button>
+                ))}
+                <button onClick={() => toggle(g.key)} style={{ border: "none", background: "none", padding: "0 0 0 8px", cursor: "pointer", font: `13px ${SANS}`, color: T.accent }}>
+                  {isOpen ? "Свернуть" : "Показать ответ"}
+                </button>
+              </span>
+            </div>
+
+            {isOpen && (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.rule}` }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "baseline", marginBottom: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: T.faint }}>повтор {idx + 1}</span>
+                  <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: v.bg, color: v.c }}>{v.t}</span>
+                </div>
+                <p style={{ fontSize: 14, lineHeight: 1.65, margin: "0 0 14px", maxWidth: "74ch" }}>
+                  <Highlight text={r.text} brand={brand.name} comps={brand.competitors} />
+                </p>
+                <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.8 }}>
+                  <div>Категория запроса — {CATS[r.cat]}</div>
+                  <div>Факт упоминания — {r.mention === "yes" ? "есть, найдено по алиасам" : "нет"}</div>
+                  <div>Позиция — {r.position ? LBL[r.position] : "не применима"}</div>
+                  <div>Точность — {r.accuracy ? `${LBL[r.accuracy]}, сверено с ${pl(facts.length, "фактом", "фактами", "фактами")}` : "проверяемых утверждений нет"}</div>
+                  <div>Тональность — {r.mention === "yes" ? LBL[r.tone!] : "не применима"}</div>
+                  <div>Сила рекомендации — {r.strength ? LBL[r.strength] : "не применима"}</div>
+                </div>
+              </div>
+            )}
+          </article>
+        );
+      })}
+
+      {shown.length === 0 && <p style={{ fontSize: 14, color: T.muted, padding: "20px 0" }}>Под фильтр ничего не попало.</p>}
+
+      {pages > 1 && (
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 24, flexWrap: "wrap" }}>
+          <Btn small disabled={current === 0} onClick={() => setPage(current - 1)}>
+            Назад
+          </Btn>
+          {Array.from({ length: pages }, (_, i) => (
+            <button
+              key={i}
+              onClick={() => setPage(i)}
+              style={{
+                font: `13px ${SANS}`,
+                cursor: "pointer",
+                minWidth: 32,
+                height: 32,
+                borderRadius: 6,
+                background: i === current ? T.accentSoft : T.surface,
+                border: `1px solid ${i === current ? T.accent : T.rule}`,
+                color: i === current ? T.accent : T.muted,
+              }}
+            >
+              {i + 1}
+            </button>
+          ))}
+          <Btn small disabled={current === pages - 1} onClick={() => setPage(current + 1)}>
+            Вперёд
+          </Btn>
+          <span style={{ fontSize: 13, color: T.faint, marginLeft: 10 }}>
+            {current * PER_PAGE + 1}–{Math.min((current + 1) * PER_PAGE, shown.length)} из {shown.length}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -767,29 +1587,36 @@ export default function App() {
   const [judgePrompt, setJudgePrompt] = useState("");
   const [defaultJudgePrompt, setDefaultJudgePrompt] = useState("");
   const [promptVer, setPromptVer] = useState(1);
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [runs, setRuns] = useState<RunFull[]>([]);
+  const [runId, setRunId] = useState<number | null>(null);
+  const [slice, setSlice] = useState("all");
+  const [fModel, setFModel] = useState("all");
+  const [fCat, setFCat] = useState("all");
+  const [fMiss, setFMiss] = useState(false);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
   const [activeRun, setActiveRun] = useState<Run | null>(null);
   const [sel, setSel] = useState<string[]>([]);
   const [repeats, setRepeats] = useState(3);
   const saveTimer = useRef<number | null>(null);
   const apiTimer = useRef<number | null>(null);
 
-  const run = runs.length ? runs[runs.length - 1] : null;
+  const run = runs.find((r) => r.id === runId) || runs[runs.length - 1] || null;
   const active = prompts.filter((p) => p.active);
   const requests = active.length * sel.length * repeats;
 
-  const withDate = (r: Run): Run => ({
-    ...r,
-    at: new Date(r.started_at).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }),
-  });
+  const loadRuns = () =>
+    req("/api/runs?rows=1")
+      .then((list: RunFull[]) => {
+        setRuns(list);
+        if (list.length) setRunId((prev) => prev ?? list[list.length - 1].id);
+      })
+      .catch(console.error);
 
   useEffect(() => {
     req("/api/brand").then(setBrandState).catch(console.error);
     req("/api/facts").then(setFacts).catch(console.error);
     req("/api/prompts").then(setPrompts).catch(console.error);
-    req("/api/runs")
-      .then((list: Run[]) => setRuns(list.map(withDate)))
-      .catch(console.error);
+    loadRuns();
     req("/api/settings")
       .then((s: ApiSettings & { judgePrompt: string; judgePromptVersion: number; defaultJudgePrompt: string }) => {
         setApiState(s);
@@ -807,15 +1634,11 @@ export default function App() {
     const timer = window.setInterval(() => {
       req(`/api/runs/${activeRun.id}`)
         .then((r: Run) => {
-          const fresh = withDate(r);
-          setActiveRun(fresh);
+          setActiveRun(r);
           if (r.status !== "running") {
-            setRuns((prev) => {
-              const rest = prev.filter((x) => x.id !== fresh.id);
-              return [...rest, fresh];
-            });
             setActiveRun(null);
-            setTab("dash");
+            setRunId(r.id);
+            loadRuns().then(() => setTab("dash"));
           }
         })
         .catch(console.error);
@@ -841,11 +1664,7 @@ export default function App() {
 
   const startRun = () =>
     req("/api/runs", send("POST", { models: sel, repeats }))
-      .then((r: Run) => {
-        const fresh = withDate(r);
-        setRuns((prev) => [...prev, fresh]);
-        setActiveRun(fresh);
-      })
+      .then((r: Run) => setActiveRun(r))
       .catch(console.error);
 
   // Бренд правится вживую, как в прототипе; на сервер уходит, когда набор затих
@@ -954,7 +1773,40 @@ export default function App() {
       </aside>
 
       <main className="body" style={{ maxWidth: 1120 }}>
-        {/* Дашборд и Ответы появятся на шаге 6 */}
+        {tab === "dash" && run && (
+          <Dashboard
+            run={run}
+            runs={runs}
+            setRunId={setRunId}
+            slice={slice}
+            setSlice={setSlice}
+            onGo={setTab}
+            fModel={fModel}
+            setFModel={setFModel}
+            setFCat={setFCat}
+            setFMiss={setFMiss}
+            MODELS={api.models}
+          />
+        )}
+        {tab === "answers" && run && (
+          <Answers
+            run={run}
+            runs={runs}
+            setRunId={setRunId}
+            brand={brand}
+            prompts={prompts}
+            facts={facts}
+            fModel={fModel}
+            setFModel={setFModel}
+            fCat={fCat}
+            setFCat={setFCat}
+            fMiss={fMiss}
+            setFMiss={setFMiss}
+            open={open}
+            setOpen={setOpen}
+            MODELS={api.models}
+          />
+        )}
         {tab === "run" && (
           <RunConfig
             sel={sel}

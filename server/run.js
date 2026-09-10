@@ -48,7 +48,43 @@ export function createRun({ models, repeats }) {
   return Number(info.lastInsertRowid);
 }
 
-export function getRun(id) {
+/**
+ * Размеченные ответы прогона в том виде, в каком их ждёт интерфейс.
+ * Ответы с ошибкой не попадают: запрос не состоялся, и считать его
+ * «упоминания нет» — значит занизить метрику.
+ */
+function rowsOf(runId, snapshot) {
+  const catOf = new Map(snapshot.prompts.map((p) => [p.id, p.cat]));
+  return db
+    .prepare(
+      `SELECT a.id, a.prompt_id, a.model, a.repeat, a.text,
+              m.mention, m.position, m.accuracy, m.tone, m.strength,
+              m.evidence, m.note, m.judge_error
+         FROM answers a
+         LEFT JOIN marks m ON m.answer_id = a.id
+        WHERE a.run_id = ? AND a.error IS NULL
+        ORDER BY a.id`
+    )
+    .all(runId)
+    .map((r) => ({
+      id: String(r.id),
+      promptId: r.prompt_id,
+      cat: catOf.get(r.prompt_id) || 'info',
+      model: r.model,
+      repeat: r.repeat,
+      mention: r.mention,
+      position: r.position,
+      accuracy: r.accuracy,
+      tone: r.tone,
+      strength: r.strength,
+      evidence: r.evidence,
+      note: r.note,
+      judgeError: r.judge_error,
+      text: r.text,
+    }));
+}
+
+export function getRun(id, { withRows = false } = {}) {
   const row = db.prepare('SELECT * FROM runs WHERE id = ?').get(Number(id));
   if (!row) return null;
   const snapshot = JSON.parse(row.models);
@@ -63,7 +99,9 @@ export function getRun(id) {
     started_at: row.started_at,
     finished_at: row.finished_at,
     selected: snapshot.selected,
-    models: snapshot.models,
+    // Интерфейс ждёт в models список выбранных моделей, как в прототипе
+    models: snapshot.selected,
+    modelList: snapshot.models,
     repeats: row.repeats,
     judge_model: row.judge_model,
     judge_prompt_version: row.judge_prompt_version,
@@ -75,14 +113,18 @@ export function getRun(id) {
     unmarked,
     prompts: snapshot.prompts,
     brand: snapshot.brand,
+    promptVer: row.judge_prompt_version,
+    at: new Date(row.started_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }),
+    short: new Date(row.started_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }).replace('.', ''),
+    ...(withRows ? { rows: rowsOf(row.id, snapshot) } : {}),
   };
 }
 
-export function listRuns() {
+export function listRuns(opts) {
   return db
     .prepare('SELECT id FROM runs ORDER BY id')
     .all()
-    .map((r) => getRun(r.id));
+    .map((r) => getRun(r.id, opts));
 }
 
 // Что ещё не сделано: сравниваем план со списком уже сохранённых ответов
@@ -127,7 +169,7 @@ export async function execute(runId) {
       .prepare('SELECT text FROM judge_prompts WHERE version = ?')
       .get(run.judge_prompt_version);
     const facts = listFacts().map((f) => f.text);
-    const apiOf = (id) => (run.models.find((m) => m.id === id) || {}).api;
+    const apiOf = (id) => (run.modelList.find((m) => m.id === id) || {}).api;
 
     const insertAnswer = db.prepare(
       `INSERT INTO answers (run_id, prompt_id, model, repeat, raw_response, text, latency_ms, cost_rub, error)
@@ -197,13 +239,16 @@ export async function execute(runId) {
         if (judged) addCost(runId, judged.cost_rub);
 
         const mark = judged && judged.mark;
+        // На брендовых запросах сила рекомендации не считается: бренд назван
+        // в самом вопросе, шкала вырождается
+        const strength = job.prompt.cat === 'brand' ? null : mark ? mark.strength : null;
         insertMark.run(
           answerId,
           mention,
           position,
           mark ? mark.accuracy : null,
           mark ? mark.tone : null,
-          mark ? mark.strength : null,
+          strength,
           mark ? mark.evidence : null,
           mark ? mark.note : null,
           mark ? null : judgeFailure || (judged && judged.judge_error) || 'не размечено'
