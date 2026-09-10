@@ -81,6 +81,50 @@ type BtnProps = {
 };
 type FactsProps = { facts: Fact[]; onAdd: (text: string) => void; onDelete: (id: number) => void };
 type BrandSetupProps = { brand: Brand; setBrand: (next: Brand) => void };
+type Model = { id: string; name: string; api: string };
+type ApiSettings = {
+  provider: string;
+  baseUrl: string;
+  models: Model[];
+  judgeModel: string;
+  maxTokens: number;
+  pinProvider: boolean;
+  fallback: boolean;
+  key_configured: boolean;
+  key_last4: string | null;
+};
+type Run = {
+  id: number;
+  at: string;
+  started_at: string;
+  status: string;
+  planned: number;
+  done: number;
+  failed: number;
+  cost_rub: number;
+};
+type NumProps = { value: number | string; suffix?: string; size?: number };
+type RunConfigProps = {
+  sel: string[];
+  setSel: (next: string[]) => void;
+  repeats: number;
+  setRepeats: (n: number) => void;
+  prompts: Prompt[];
+  requests: number;
+  progress: number | null;
+  onRun: () => void;
+  api: ApiSettings;
+  promptVer: number;
+  onGo: (tab: string) => void;
+};
+type SettingsProps = {
+  api: ApiSettings;
+  setApi: (next: ApiSettings) => void;
+  judgePrompt: string;
+  saveJudge: (text: string) => void;
+  promptVer: number;
+  defaultJudgePrompt: string;
+};
 type ScaleBlockProps = {
   title: string;
   question: string;
@@ -99,6 +143,15 @@ const send = (method: string, body: unknown): RequestInit => ({
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(body),
 });
+
+function Num({ value, suffix, size }: NumProps) {
+  return (
+    <span style={{ fontFamily: SERIF, fontSize: size || 32, lineHeight: 1.05, color: T.ink, fontVariantNumeric: "tabular-nums" }}>
+      {value}
+      {suffix ? <span style={{ fontSize: (size || 32) * 0.6, color: T.muted }}>{suffix}</span> : null}
+    </span>
+  );
+}
 
 function Dot({ cat }: { cat: string }) {
   const c = CAT_COLOR[cat] || T.faint;
@@ -122,6 +175,282 @@ function Btn({ children, onClick, primary, small, disabled }: BtnProps) {
     >
       {children}
     </button>
+  );
+}
+
+function RunConfig({ sel, setSel, repeats, setRepeats, prompts, requests, progress, onRun, api, promptVer, onGo }: RunConfigProps) {
+  const cost = Math.round(requests * 0.62);
+  // На каждый ответ уходит два обращения к шлюзу — к модели и к судье — плюс
+  // паузы между ними. По факту около 6,5 секунды на ответ, запросы идут по очереди.
+  const mins = Math.max(1, Math.round((requests * 6.5) / 60));
+  const counts: Record<string, number> = {};
+  prompts.forEach((p) => (counts[p.cat] = (counts[p.cat] || 0) + 1));
+  const thin = Object.entries(CATS).filter(([k]) => (counts[k] || 0) < 10);
+
+  if (progress !== null)
+    return (
+      <div style={{ maxWidth: 520, margin: "60px auto", textAlign: "center" }}>
+        <h1 style={{ font: `400 22px ${SERIF}`, margin: "0 0 24px" }}>Идёт прогон</h1>
+        <div style={{ height: 6, background: "#EFEFEC", borderRadius: 3, overflow: "hidden", marginBottom: 12 }}>
+          <div style={{ height: "100%", width: `${(progress / requests) * 100}%`, background: T.accent }} />
+        </div>
+        <p style={{ fontSize: 13, color: T.muted }}>
+          {progress} из {pl(requests, "запроса", "запросов", "запросов")}
+        </p>
+      </div>
+    );
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <h1 style={{ font: `400 26px ${SERIF}`, margin: "0 0 6px" }}>Новый прогон</h1>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 28px" }}>Веб-поиск выключен — так ответы сравнимы между собой и между неделями.</p>
+
+      <h2 style={{ font: `400 15px ${SANS}`, margin: "0 0 12px" }}>Модели</h2>
+      <div style={{ marginBottom: 28 }}>
+        {api.models.map((mo) => (
+          <label key={mo.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: T.surface, border: `1px solid ${sel.includes(mo.id) ? T.accent : T.rule}`, borderRadius: 8, marginBottom: 8, cursor: "pointer" }}>
+            <input type="checkbox" checked={sel.includes(mo.id)} onChange={() => setSel(sel.includes(mo.id) ? sel.filter((x) => x !== mo.id) : [...sel, mo.id])} style={{ padding: 0 }} />
+            <span style={{ fontSize: 14 }}>{mo.name}</span>
+            <span style={{ fontSize: 12, color: T.faint, marginLeft: "auto", fontFamily: "ui-monospace, monospace" }}>{mo.api}</span>
+          </label>
+        ))}
+      </div>
+
+      <h2 style={{ font: `400 15px ${SANS}`, margin: "0 0 8px" }}>Повторов на запрос</h2>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 12px", maxWidth: "64ch" }}>Модели отвечают по-разному на один и тот же вопрос. Один повтор — это шум, а не замер.</p>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 30 }}>
+        <input type="range" min={1} max={5} step={1} value={repeats} onChange={(e) => setRepeats(+e.target.value)} style={{ flex: 1, padding: 0, border: "none" }} />
+        <span style={{ fontFamily: SERIF, fontSize: 20, width: 20 }}>{repeats}</span>
+      </div>
+
+      <div style={{ borderTop: `1px solid ${T.rule}`, borderBottom: `1px solid ${T.rule}`, padding: "20px 0", marginBottom: 20, display: "flex", gap: 40, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 12, color: T.muted, marginBottom: 6 }}>Запросов к API</div>
+          <Num value={requests} />
+        </div>
+        <div>
+          <div style={{ fontSize: 12, color: T.muted, marginBottom: 6 }}>Примерно займёт</div>
+          <Num value={mins} suffix=" мин" />
+        </div>
+        <div>
+          <div style={{ fontSize: 12, color: T.muted, marginBottom: 6 }}>Ориентировочно</div>
+          <Num value={cost} suffix=" ₽" />
+          <div style={{ fontSize: 12, color: T.faint, marginTop: 6, maxWidth: 190, lineHeight: 1.5 }}>Точная сумма придёт от шлюза после прогона</div>
+        </div>
+      </div>
+
+      {thin.length > 0 && (
+        <div style={{ background: "#FBF6EC", border: "1px solid #EBDFC8", borderRadius: 8, padding: "14px 16px", marginBottom: 22, fontSize: 13, color: T.warn, lineHeight: 1.6 }}>
+          Мало запросов для устойчивой статистики: {thin.map(([k]) => `${CATS[k].toLowerCase()} — ${counts[k] || 0}`).join(", ")}. Рабочий минимум — 10–15 на категорию, иначе недельные колебания будут шумом.
+        </div>
+      )}
+
+      {!api.key_configured && (
+        <div style={{ background: "#FBF6EC", border: "1px solid #EBDFC8", borderRadius: 8, padding: "14px 16px", marginBottom: 22, fontSize: 13, color: T.warn, lineHeight: 1.6, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <span>Ключ API не указан — прогон невозможен.</span>
+          <button onClick={() => onGo("settings")} style={{ border: "none", background: "none", padding: 0, cursor: "pointer", font: `13px ${SANS}`, color: T.warn, textDecoration: "underline" }}>
+            Настроить подключение
+          </button>
+        </div>
+      )}
+
+      <p style={{ fontSize: 13, color: T.faint, margin: "0 0 20px", lineHeight: 1.6 }}>
+        Судья — {api.judgeModel}, промпт версии {promptVer}. Эти настройки записываются в прогон и учитываются при сравнении.
+      </p>
+
+      <Btn primary onClick={onRun} disabled={!sel.length || !prompts.length || !api.key_configured}>
+        Запустить прогон
+      </Btn>
+    </div>
+  );
+}
+
+function Settings({ api, setApi, judgePrompt, saveJudge, promptVer, defaultJudgePrompt }: SettingsProps) {
+  const [showKey, setShowKey] = useState(false);
+  const [draft, setDraft] = useState(judgePrompt);
+  const [status, setStatus] = useState("");
+  const [err, setErr] = useState("");
+  const dirty = draft !== judgePrompt;
+
+  const check = () => {
+    setStatus("Проверяю…");
+    fetch("/api/test-connection", { method: "POST" })
+      .then((r) => r.json())
+      .then((d) =>
+        setStatus(d.ok ? `Подключение работает, модель ${d.model} отвечает.` : `Не удалось подключиться. ${d.error}`)
+      )
+      .catch(() => setStatus("Не удалось подключиться."));
+  };
+
+  useEffect(() => {
+    setDraft(judgePrompt);
+  }, [judgePrompt]);
+
+  const upload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { setDraft(String(reader.result)); setErr(""); };
+    reader.onerror = () => setErr("Не удалось прочитать файл.");
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const save = () => {
+    if (!draft.trim()) { setErr("Промпт не может быть пустым."); return; }
+    saveJudge(draft);
+    setErr("");
+  };
+
+  const field = (label: string, key: "provider" | "baseUrl", ph: string, hint?: string) => (
+    <div style={{ marginBottom: 20 }}>
+      <label style={{ display: "block", fontSize: 13, color: T.muted, marginBottom: 6 }}>{label}</label>
+      <input value={api[key]} placeholder={ph} onChange={(e) => setApi({ ...api, [key]: e.target.value })} style={{ width: "100%" }} />
+      {hint && <p style={{ fontSize: 12, color: T.faint, margin: "6px 0 0", lineHeight: 1.5 }}>{hint}</p>}
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <h1 style={{ font: `400 26px ${SERIF}`, margin: "0 0 8px" }}>Подключение</h1>
+      <p style={{ fontSize: 14, color: T.muted, margin: "0 0 32px", lineHeight: 1.7, maxWidth: "70ch" }}>
+        Один ключ на все модели: и на те, что отвечают, и на модель-судью. Отдельной интеграции для судьи не нужно — это запрос к тому же шлюзу.
+      </p>
+
+      <h2 style={{ font: `400 18px ${SANS}`, margin: "0 0 16px" }}>Шлюз</h2>
+
+      <div style={{ marginBottom: 20 }}>
+        <label style={{ display: "block", fontSize: 13, color: T.muted, marginBottom: 6 }}>Провайдер</label>
+        <select value={api.provider} onChange={(e) => setApi({ ...api, provider: e.target.value })} style={{ width: "100%" }}>
+          <option value="aitunnel">AITunnel</option>
+          <option value="custom">Другой OpenAI-совместимый</option>
+        </select>
+      </div>
+
+      {field("Адрес API", "baseUrl", "https://…", "Проверьте актуальный адрес в документации шлюза — он может отличаться.")}
+
+      <div style={{ marginBottom: 8 }}>
+        <label style={{ display: "block", fontSize: 13, color: T.muted, marginBottom: 6 }}>Ключ</label>
+        <div style={{ display: "flex", gap: 10 }}>
+          <input
+            type="text"
+            readOnly
+            value={api.key_configured ? (showKey ? `••••••••••••${api.key_last4}` : "••••••••••••••••") : ""}
+            placeholder="ключ задаётся в файле .env на сервере"
+            style={{ flex: 1 }}
+          />
+          <Btn small onClick={() => setShowKey(!showKey)}>{showKey ? "Скрыть" : "Показать"}</Btn>
+        </div>
+      </div>
+      <p style={{ fontSize: 12, color: T.faint, margin: "0 0 20px", lineHeight: 1.6, maxWidth: "70ch" }}>
+        В рабочей версии ключ сохраняется на сервере и обратно в браузер не возвращается — здесь будет видно только последние четыре знака. Хранить его в интерфейсе целиком нельзя: любой, кто откроет вкладку разработчика, заберёт его вместе с балансом.
+      </p>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+        <Btn onClick={check} disabled={!api.key_configured}>
+          Проверить подключение
+        </Btn>
+        {!api.key_configured && <span style={{ fontSize: 13, color: T.faint }}>сначала вставьте ключ</span>}
+      </div>
+      {status && <p style={{ fontSize: 13, color: T.muted, margin: "0 0 24px", maxWidth: "70ch", lineHeight: 1.6 }}>{status}</p>}
+
+      <h2 style={{ font: `400 18px ${SANS}`, margin: "36px 0 8px" }}>Модели</h2>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px", maxWidth: "70ch" }}>
+        Указывайте точный идентификатор из каталога шлюза, без префикса провайдера. Не используйте <code>auto</code> и плавающие алиасы «последней версии»: модель подменится молча, и скачок метрики будет не отличить от реального изменения.
+      </p>
+      {api.models.map((m, i) => (
+        <div key={m.id} style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 14, flex: "0 0 110px" }}>{m.name}</span>
+          <input
+            value={m.api}
+            onChange={(e) =>
+              setApi({ ...api, models: api.models.map((x, j) => (j === i ? { ...x, api: e.target.value } : x)) })
+            }
+            style={{ flex: 1, fontFamily: "ui-monospace, monospace", fontSize: 13 }}
+          />
+        </div>
+      ))}
+
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 20, paddingTop: 20, borderTop: `1px solid ${T.rule}`, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 14, flex: "0 0 110px" }}>Судья</span>
+        <input value={api.judgeModel} onChange={(e) => setApi({ ...api, judgeModel: e.target.value })} style={{ flex: 1, fontFamily: "ui-monospace, monospace", fontSize: 13 }} />
+      </div>
+      <p style={{ fontSize: 12, color: T.faint, margin: "8px 0 0", lineHeight: 1.6, maxWidth: "70ch" }}>
+        Берите дешёвую модель — судья выдаёт несколько десятков токенов. Она не должна совпадать с проверяемыми, иначе оценка будет смещённой.
+      </p>
+
+      <h2 style={{ font: `400 18px ${SANS}`, margin: "40px 0 8px" }}>Параметры запроса</h2>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 20px", maxWidth: "70ch", lineHeight: 1.6 }}>
+        Эти настройки влияют на сопоставимость замеров сильнее, чем выбор моделей.
+      </p>
+
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 18, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 14, flex: "0 0 190px" }}>Лимит токенов в ответе</span>
+        <input
+          type="number"
+          value={api.maxTokens}
+          min={200}
+          step={100}
+          onChange={(e) => setApi({ ...api, maxTokens: +e.target.value })}
+          style={{ width: 120 }}
+        />
+        <span style={{ fontSize: 12, color: T.faint, flex: 1, minWidth: 240, lineHeight: 1.5 }}>
+          По этому значению шлюз резервирует стоимость запроса, после ответа списывается фактический расход.
+        </span>
+      </div>
+
+      <label style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 14, cursor: "pointer" }}>
+        <input type="checkbox" checked={api.pinProvider} onChange={(e) => setApi({ ...api, pinProvider: e.target.checked })} style={{ padding: 0, marginTop: 3 }} />
+        <span>
+          <span style={{ fontSize: 14 }}>Закреплять провайдера</span>
+          <span style={{ display: "block", fontSize: 12, color: T.faint, marginTop: 3, maxWidth: "62ch", lineHeight: 1.6 }}>
+            У одной модели может быть несколько провайдеров, и ответы у них слегка расходятся. Без закрепления появляется источник разброса, который вы не контролируете.
+          </span>
+        </span>
+      </label>
+
+      <label style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={api.fallback} onChange={(e) => setApi({ ...api, fallback: e.target.checked })} style={{ padding: 0, marginTop: 3 }} />
+        <span>
+          <span style={{ fontSize: 14 }}>Разрешить запасные модели</span>
+          <span style={{ display: "block", fontSize: 12, color: T.faint, marginTop: 3, maxWidth: "62ch", lineHeight: 1.6 }}>
+            При отказе провайдера запрос уйдёт другой модели. Для обычных задач удобно, для замера — нет.
+          </span>
+        </span>
+      </label>
+
+      {api.fallback && (
+        <div style={{ background: "#FBEDEC", border: "1px solid #F0D7D4", borderRadius: 8, padding: "12px 16px", marginBottom: 10, fontSize: 13, color: T.neg, lineHeight: 1.6, maxWidth: "70ch" }}>
+          В отчёт попадут ответы не той модели, которая указана в колонке. Метрики по моделям станут недостоверными.
+        </div>
+      )}
+
+      <h2 style={{ font: `400 18px ${SANS}`, margin: "40px 0 8px" }}>Промпт судьи</h2>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px", maxWidth: "70ch", lineHeight: 1.6 }}>
+        Подстановки в фигурных скобках заполняются автоматически: {"{brand}"}, {"{aliases}"}, {"{competitors}"}, {"{facts}"}, {"{prompt}"}, {"{answer}"}.
+      </p>
+
+      <div style={{ background: "#FBF6EC", border: "1px solid #EBDFC8", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: T.warn, lineHeight: 1.6, maxWidth: "70ch" }}>
+        Правка промпта меняет правила оценки, поэтому прогоны до и после сравнивать нельзя. Версия промпта записывается в каждый прогон — на графиках точка смены будет отмечена.
+      </div>
+
+      <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={18} style={{ width: "100%", resize: "vertical", fontFamily: "ui-monospace, monospace", fontSize: 12, lineHeight: 1.6 }} />
+
+      {err && <p style={{ fontSize: 13, color: T.neg, margin: "8px 0 0" }}>{err}</p>}
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+        <Btn primary onClick={save} disabled={!dirty}>Сохранить как версию {promptVer + 1}</Btn>
+        <Btn onClick={() => { setDraft(judgePrompt); setErr(""); }} disabled={!dirty}>Отменить</Btn>
+        <label style={{ font: `13px ${SANS}`, padding: "6px 12px", borderRadius: 6, border: `1px solid ${T.rule}`, background: T.surface, cursor: "pointer" }}>
+          Загрузить из файла
+          <input type="file" accept=".txt,.md" onChange={upload} style={{ display: "none" }} />
+        </label>
+        <Btn small onClick={() => { setDraft(defaultJudgePrompt); setErr(""); }}>Вернуть стандартный</Btn>
+        <span style={{ fontSize: 13, color: T.faint, marginLeft: "auto" }}>
+          текущая версия {promptVer} · {draft.length} знаков
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -450,16 +779,90 @@ export default function App() {
   const [brand, setBrandState] = useState<Brand | null>(null);
   const [facts, setFacts] = useState<Fact[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
-  // Прогоны появятся на шаге 5
-  const runs: { at: string }[] = [];
-  const run = runs.length ? runs[runs.length - 1] : null;
+  const [api, setApiState] = useState<ApiSettings | null>(null);
+  const [judgePrompt, setJudgePrompt] = useState("");
+  const [defaultJudgePrompt, setDefaultJudgePrompt] = useState("");
+  const [promptVer, setPromptVer] = useState(1);
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [activeRun, setActiveRun] = useState<Run | null>(null);
+  const [sel, setSel] = useState<string[]>([]);
+  const [repeats, setRepeats] = useState(3);
   const saveTimer = useRef<number | null>(null);
+  const apiTimer = useRef<number | null>(null);
+
+  const run = runs.length ? runs[runs.length - 1] : null;
+  const active = prompts.filter((p) => p.active);
+  const requests = active.length * sel.length * repeats;
+
+  const withDate = (r: Run): Run => ({
+    ...r,
+    at: new Date(r.started_at).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }),
+  });
 
   useEffect(() => {
     req("/api/brand").then(setBrandState).catch(console.error);
     req("/api/facts").then(setFacts).catch(console.error);
     req("/api/prompts").then(setPrompts).catch(console.error);
+    req("/api/runs")
+      .then((list: Run[]) => setRuns(list.map(withDate)))
+      .catch(console.error);
+    req("/api/settings")
+      .then((s: ApiSettings & { judgePrompt: string; judgePromptVersion: number; defaultJudgePrompt: string }) => {
+        setApiState(s);
+        setJudgePrompt(s.judgePrompt);
+        setDefaultJudgePrompt(s.defaultJudgePrompt);
+        setPromptVer(s.judgePromptVersion);
+        setSel(s.models.map((m) => m.id));
+      })
+      .catch(console.error);
   }, []);
+
+  // Пока прогон идёт, спрашиваем сервер о прогрессе
+  useEffect(() => {
+    if (!activeRun || activeRun.status !== "running") return;
+    const timer = window.setInterval(() => {
+      req(`/api/runs/${activeRun.id}`)
+        .then((r: Run) => {
+          const fresh = withDate(r);
+          setActiveRun(fresh);
+          if (r.status !== "running") {
+            setRuns((prev) => {
+              const rest = prev.filter((x) => x.id !== fresh.id);
+              return [...rest, fresh];
+            });
+            setActiveRun(null);
+            setTab("dash");
+          }
+        })
+        .catch(console.error);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [activeRun]);
+
+  function setApi(next: ApiSettings) {
+    setApiState(next);
+    if (apiTimer.current) window.clearTimeout(apiTimer.current);
+    apiTimer.current = window.setTimeout(() => {
+      req("/api/settings", send("PUT", next)).catch(console.error);
+    }, 400);
+  }
+
+  const saveJudge = (text: string) =>
+    req("/api/judge-prompt", send("PUT", { text }))
+      .then((r: { version: number; text: string }) => {
+        setJudgePrompt(r.text);
+        setPromptVer(r.version);
+      })
+      .catch(console.error);
+
+  const startRun = () =>
+    req("/api/runs", send("POST", { models: sel, repeats }))
+      .then((r: Run) => {
+        const fresh = withDate(r);
+        setRuns((prev) => [...prev, fresh]);
+        setActiveRun(fresh);
+      })
+      .catch(console.error);
 
   // Бренд правится вживую, как в прототипе; на сервер уходит, когда набор затих
   function setBrand(next: Brand) {
@@ -502,7 +905,7 @@ export default function App() {
     { group: "Настройка", items: [["prompts", "Запросы"], ["facts", "База фактов"], ["brand", "Бренд"]] },
   ];
 
-  if (!brand) return null;
+  if (!brand || !api) return null;
 
   return (
     <div className="shell" style={{ background: T.bg, minHeight: "100vh", fontFamily: SANS, color: T.ink }}>
@@ -564,7 +967,32 @@ export default function App() {
       </aside>
 
       <main className="body" style={{ maxWidth: 1120 }}>
-        {/* Дашборд, Ответы и Новый прогон появятся на шагах 5 и 6 */}
+        {/* Дашборд и Ответы появятся на шаге 6 */}
+        {tab === "run" && (
+          <RunConfig
+            sel={sel}
+            setSel={setSel}
+            repeats={repeats}
+            setRepeats={setRepeats}
+            prompts={active}
+            requests={activeRun ? activeRun.planned : requests}
+            progress={activeRun ? activeRun.done : null}
+            onRun={startRun}
+            api={api}
+            promptVer={promptVer}
+            onGo={setTab}
+          />
+        )}
+        {tab === "settings" && (
+          <Settings
+            api={api}
+            setApi={setApi}
+            judgePrompt={judgePrompt}
+            saveJudge={saveJudge}
+            promptVer={promptVer}
+            defaultJudgePrompt={defaultJudgePrompt}
+          />
+        )}
         {tab === "prompts" && (
           <Prompts prompts={prompts} onAdd={addPrompts} onUpdate={updatePrompt} onDelete={deletePrompt} />
         )}

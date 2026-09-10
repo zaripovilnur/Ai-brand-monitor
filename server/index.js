@@ -20,6 +20,8 @@ import {
   updatePrompt,
   deletePrompt,
 } from './store.js';
+import { getSettings, saveSettings, currentJudgePrompt, saveJudgePrompt, seedSettingsIfEmpty } from './settings.js';
+import { createRun, getRun, listRuns, execute, resumeUnfinished } from './run.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
@@ -27,6 +29,9 @@ const CATEGORIES = ['brand', 'category', 'competitive', 'info'];
 
 // Первый запуск: стартовые значения из прототипа
 seedIfEmpty();
+seedSettingsIfEmpty();
+// Прогон, оборванный на середине, продолжается сам — без повторной оплаты
+resumeUnfinished();
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -201,6 +206,87 @@ app.patch('/api/prompts/:id', (req, res) => {
 app.delete('/api/prompts/:id', (req, res) => {
   if (!deletePrompt(req.params.id)) return res.status(404).json({ error: 'Запрос не найден.' });
   res.status(204).end();
+});
+
+// --- Подключение: настройки и промпт судьи ---
+
+app.get('/api/settings', (req, res) => {
+  const judge = currentJudgePrompt();
+  res.json({
+    ...getSettings(),
+    judgePrompt: judge.text,
+    judgePromptVersion: judge.version,
+    defaultJudgePrompt: DEFAULT_JUDGE_PROMPT,
+    ...keyInfo(), // ключ не отдаётся, только последние 4 знака
+  });
+});
+
+app.put('/api/settings', (req, res) => {
+  const patch = req.body || {};
+  if (Array.isArray(patch.models)) {
+    for (const m of patch.models) {
+      const api = String(m.api || '').trim();
+      if (!api) return res.status(400).json({ error: 'Строка модели не может быть пустой.' });
+      if (api.toLowerCase() === 'auto') {
+        return res.status(400).json({ error: 'Модель auto запрещена: замеры перестанут быть сравнимыми.' });
+      }
+    }
+  }
+  res.json(saveSettings(patch));
+});
+
+app.put('/api/judge-prompt', (req, res) => {
+  try {
+    res.json(saveJudgePrompt((req.body || {}).text));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// Кнопка «Проверить подключение»
+app.post('/api/test-connection', async (req, res) => {
+  const settings = getSettings();
+  const model = (settings.models[0] || {}).api;
+  try {
+    const r = await chat({
+      model,
+      messages: [{ role: 'user', content: 'ping' }],
+      maxTokens: 16,
+    });
+    res.json({ ok: true, model: r.model_returned || model });
+  } catch (e) {
+    res.status(e instanceof GatewayError && e.code === 'no_key' ? 400 : 502).json({
+      ok: false,
+      error: e instanceof GatewayError ? e.message : 'Не удалось связаться со шлюзом.',
+    });
+  }
+});
+
+// --- Прогоны ---
+
+app.get('/api/runs', (req, res) => {
+  res.json(listRuns());
+});
+
+app.post('/api/runs', (req, res) => {
+  const { models, repeats } = req.body || {};
+  if (!keyInfo().key_configured) {
+    return res.status(400).json({ error: 'Ключ AITunnel не задан в .env — прогон невозможен.' });
+  }
+  let id;
+  try {
+    id = createRun({ models, repeats });
+  } catch (e) {
+    return res.status(400).json({ error: String(e.message || e) });
+  }
+  execute(id); // в фоне, ответ не ждём
+  res.status(201).json(getRun(id));
+});
+
+app.get('/api/runs/:id', (req, res) => {
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ error: 'Прогон не найден.' });
+  res.json(run);
 });
 
 app.listen(PORT, () => {

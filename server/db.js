@@ -78,9 +78,21 @@ CREATE TABLE IF NOT EXISTS marks (
   judge_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS judge_prompts (
+  version    INTEGER PRIMARY KEY,
+  text       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_answers_run    ON answers(run_id);
 CREATE INDEX IF NOT EXISTS idx_answers_prompt ON answers(prompt_id);
 CREATE INDEX IF NOT EXISTS idx_marks_answer   ON marks(answer_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_answers_slot ON answers(run_id, prompt_id, model, repeat);
 CREATE INDEX IF NOT EXISTS idx_prompts_brand  ON prompts(brand_id);
 CREATE INDEX IF NOT EXISTS idx_runs_brand     ON runs(brand_id);
 `);
