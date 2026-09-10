@@ -172,9 +172,18 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/health
 [ "$code" = "200" ] || fail "Программа не отвечает. Посмотрите: journalctl -u ai-brand-monitor -n 40"
 info "программа отвечает"
 
-code_nginx=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1/" || true)
+# nginx перезагружается не мгновенно: старые рабочие процессы какое-то время
+# ещё отвечают по прежнему конфигу. Поэтому проверяем с повторами.
+code_nginx=""
+for _ in $(seq 1 15); do
+  code_nginx=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1/" || true)
+  [ "$code_nginx" = "401" ] && break
+  sleep 1
+done
 [ "$code_nginx" = "401" ] \
-  || fail "nginx не спрашивает пароль (код $code_nginx). Сервис нельзя оставлять открытым."
+  || fail "nginx не спрашивает пароль (код $code_nginx). Сервис нельзя оставлять открытым.
+Проверьте вручную:  curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/
+Если через минуту он отвечает 401 — всё в порядке, установка завершена."
 info "без пароля сервис не пускает"
 
 addr=$(hostname -I | awk '{print $1}')
