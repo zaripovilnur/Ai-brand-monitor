@@ -8,9 +8,25 @@ import { SEED_MODELS, SEED_JUDGE_MODEL, SEED_MAX_TOKENS, SEED_BRAND, SEED_FACTS 
 import { markMention, markPosition, parseAliases } from './marking.js';
 import { classifyText } from './classify.js';
 import { judgeAnswer, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_PROMPT_VERSION } from './judge.js';
+import {
+  seedIfEmpty,
+  getBrand,
+  saveBrand,
+  listFacts,
+  addFact,
+  deleteFact,
+  listPrompts,
+  addPrompts,
+  updatePrompt,
+  deletePrompt,
+} from './store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
+const CATEGORIES = ['brand', 'category', 'competitive', 'info'];
+
+// Первый запуск: стартовые значения из прототипа
+seedIfEmpty();
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -125,6 +141,66 @@ app.post('/api/test-judge', async (req, res) => {
     console.error('[test-judge]', e);
     res.status(500).json({ ok: false, error: 'Внутренняя ошибка сервера.', code: 'internal' });
   }
+});
+
+// --- Бренд ---
+
+app.get('/api/brand', (req, res) => {
+  res.json(getBrand());
+});
+
+app.put('/api/brand', (req, res) => {
+  const { name, aliases, competitors } = req.body || {};
+  if (name !== undefined && !String(name).trim()) {
+    return res.status(400).json({ error: 'Название бренда не может быть пустым.' });
+  }
+  res.json(saveBrand({ name, aliases, competitors }));
+});
+
+// --- Факты ---
+
+app.get('/api/facts', (req, res) => {
+  res.json(listFacts());
+});
+
+app.post('/api/facts', (req, res) => {
+  const text = String((req.body || {}).text || '').trim();
+  if (!text) return res.status(400).json({ error: 'Пустой факт добавить нельзя.' });
+  res.status(201).json(addFact(text));
+});
+
+app.delete('/api/facts/:id', (req, res) => {
+  if (!deleteFact(req.params.id)) return res.status(404).json({ error: 'Факт не найден.' });
+  res.status(204).end();
+});
+
+// --- Запросы ---
+
+app.get('/api/prompts', (req, res) => {
+  res.json(listPrompts());
+});
+
+app.post('/api/prompts', (req, res) => {
+  const body = req.body || {};
+  const list = Array.isArray(body.texts) ? body.texts : [body.text];
+  const cleaned = list.map((t) => String(t || '').trim()).filter(Boolean);
+  if (!cleaned.length) return res.status(400).json({ error: 'Нечего добавлять.' });
+  res.status(201).json(addPrompts(cleaned));
+});
+
+app.patch('/api/prompts/:id', (req, res) => {
+  const { category, active } = req.body || {};
+  if (category !== undefined && !CATEGORIES.includes(category)) {
+    return res.status(400).json({ error: 'Неизвестная категория.' });
+  }
+  const updated = updatePrompt(req.params.id, { category, active });
+  if (!updated) return res.status(404).json({ error: 'Запрос не найден.' });
+  res.json(updated);
+});
+
+app.delete('/api/prompts/:id', (req, res) => {
+  if (!deletePrompt(req.params.id)) return res.status(404).json({ error: 'Запрос не найден.' });
+  res.status(204).end();
 });
 
 app.listen(PORT, () => {
