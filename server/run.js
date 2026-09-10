@@ -10,7 +10,20 @@ import { getSettings, currentJudgePrompt } from './settings.js';
 
 const running = new Set(); // какие прогоны уже крутятся в этом процессе
 
+export function activeRun() {
+  return db.prepare("SELECT id FROM runs WHERE status = 'running' ORDER BY id LIMIT 1").get() || null;
+}
+
 export function createRun({ models, repeats }) {
+  // Два прогона разом удвоили бы нагрузку на шлюз и расход денег
+  const busy = activeRun();
+  if (busy) {
+    const e = new Error('Прогон уже идёт. Дождитесь его окончания.');
+    e.code = 'run_in_progress';
+    e.runId = busy.id;
+    throw e;
+  }
+
   const brand = getBrand();
   const settings = getSettings();
   const judge = currentJudgePrompt();
@@ -102,6 +115,8 @@ export function getRun(id, { withRows = false } = {}) {
     // Интерфейс ждёт в models список выбранных моделей, как в прототипе
     models: snapshot.selected,
     modelList: snapshot.models,
+    // Точные строки выбранных моделей: по ним видно подмену версии
+    modelApis: snapshot.selected.map((id) => (snapshot.models.find((m) => m.id === id) || {}).api || id),
     repeats: row.repeats,
     judge_model: row.judge_model,
     judge_prompt_version: row.judge_prompt_version,

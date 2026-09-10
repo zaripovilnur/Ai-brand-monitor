@@ -1,0 +1,34 @@
+# Автозапуск программы на сервере.
+# Скопировать в /etc/systemd/system/ai-brand-monitor.service,
+# затем: systemctl daemon-reload && systemctl enable --now ai-brand-monitor
+
+[Unit]
+Description=Мониторинг бренда в ответах ИИ
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=monitor
+WorkingDirectory=/opt/ai-brand-monitor
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=5
+
+# Слушаем только локальный адрес: наружу пускает nginx с паролем
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+Environment=NODE_ENV=production
+
+# Ключ AITunnel лежит в .env рядом с программой и наружу не отдаётся
+EnvironmentFile=/opt/ai-brand-monitor/.env
+
+# Программе нужно писать только в свою папку с базой
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/ai-brand-monitor/data
+
+[Install]
+WantedBy=multi-user.target

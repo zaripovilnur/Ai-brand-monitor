@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
@@ -25,6 +26,8 @@ import { createRun, getRun, listRuns, execute, resumeUnfinished } from './run.js
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
+// По умолчанию слушаем только локальный адрес: наружу пускает nginx с паролем
+const HOST = process.env.HOST || '127.0.0.1';
 const CATEGORIES = ['brand', 'category', 'competitive', 'info'];
 
 // Первый запуск: стартовые значения из прототипа
@@ -278,7 +281,8 @@ app.post('/api/runs', (req, res) => {
   try {
     id = createRun({ models, repeats });
   } catch (e) {
-    return res.status(400).json({ error: String(e.message || e) });
+    const busy = e.code === 'run_in_progress';
+    return res.status(busy ? 409 : 400).json({ error: String(e.message || e), code: e.code, runId: e.runId });
   }
   execute(id); // в фоне, ответ не ждём
   res.status(201).json(getRun(id));
@@ -290,6 +294,18 @@ app.get('/api/runs/:id', (req, res) => {
   res.json(run);
 });
 
-app.listen(PORT, () => {
-  console.log(`[server] http://localhost:${PORT}  (health: /api/health)`);
+// Неизвестный адрес внутри /api — честная 404, а не страница приложения
+app.use('/api', (req, res) => res.status(404).json({ error: 'Неизвестный адрес.' }));
+
+// Режим для сервера: отдаём собранный фронтенд тем же процессом.
+// В разработке папки dist нет, и её место занимает Vite.
+const DIST = path.resolve(__dirname, '..', 'dist');
+if (fs.existsSync(path.join(DIST, 'index.html'))) {
+  app.use(express.static(DIST));
+  app.use((req, res) => res.sendFile(path.join(DIST, 'index.html')));
+  console.log('[server] отдаю собранный фронтенд из dist/');
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`[server] http://${HOST}:${PORT}  (health: /api/health)`);
 });

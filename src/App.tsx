@@ -181,6 +181,7 @@ type Run = {
   cost_rub: number;
 };
 type RunFull = Run & {
+  modelApis: string[];
   short: string;
   repeats: number;
   promptVer: number;
@@ -649,6 +650,7 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
   const sameSetup =
     prev &&
     prev.models.join() === run.models.join() &&
+    (prev.modelApis || []).join() === (run.modelApis || []).join() &&
     prev.repeats === run.repeats &&
     prev.prompts.length === run.prompts.length &&
     prev.promptVer === run.promptVer;
@@ -1617,6 +1619,16 @@ export default function App() {
     req("/api/facts").then(setFacts).catch(console.error);
     req("/api/prompts").then(setPrompts).catch(console.error);
     loadRuns();
+    // Прогон мог запустить коллега — показываем его всем на экране прогресса
+    req("/api/runs")
+      .then((list: Run[]) => {
+        const going = list.find((r) => r.status === "running");
+        if (going) {
+          setActiveRun(going);
+          setTab("run");
+        }
+      })
+      .catch(console.error);
     req("/api/settings")
       .then((s: ApiSettings & { judgePrompt: string; judgePromptVersion: number; defaultJudgePrompt: string }) => {
         setApiState(s);
