@@ -89,7 +89,18 @@ CREATE TABLE IF NOT EXISTS judge_prompts (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sources (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  answer_id INTEGER NOT NULL REFERENCES answers(id) ON DELETE CASCADE,
+  url       TEXT NOT NULL,
+  title     TEXT,
+  domain    TEXT,
+  position  INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_answers_run    ON answers(run_id);
+CREATE INDEX IF NOT EXISTS idx_sources_answer ON sources(answer_id);
+CREATE INDEX IF NOT EXISTS idx_sources_domain ON sources(domain);
 CREATE INDEX IF NOT EXISTS idx_answers_prompt ON answers(prompt_id);
 CREATE INDEX IF NOT EXISTS idx_marks_answer   ON marks(answer_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_answers_slot ON answers(run_id, prompt_id, model, repeat);

@@ -70,6 +70,17 @@ export function createRun({ models, repeats }) {
  */
 function rowsOf(runId, snapshot) {
   const catOf = new Map(snapshot.prompts.map((p) => [p.id, p.cat]));
+  const sourcesOf = new Map();
+  for (const s of db
+    .prepare(
+      `SELECT s.answer_id, s.url, s.title, s.domain, s.position
+         FROM sources s JOIN answers a ON a.id = s.answer_id
+        WHERE a.run_id = ? ORDER BY s.answer_id, s.position`
+    )
+    .all(runId)) {
+    if (!sourcesOf.has(s.answer_id)) sourcesOf.set(s.answer_id, []);
+    sourcesOf.get(s.answer_id).push({ url: s.url, title: s.title, domain: s.domain, position: s.position });
+  }
   return db
     .prepare(
       `SELECT a.id, a.prompt_id, a.model, a.repeat, a.text,
@@ -96,6 +107,7 @@ function rowsOf(runId, snapshot) {
       note: r.note,
       judgeError: r.judge_error,
       text: r.text,
+      sources: sourcesOf.get(r.id) || [],
     }));
 }
 
@@ -198,6 +210,9 @@ export async function execute(runId) {
       `INSERT INTO answers (run_id, prompt_id, model, repeat, raw_response, text, latency_ms, cost_rub, error)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
+    const insertSource = db.prepare(
+      'INSERT INTO sources (answer_id, url, title, domain, position) VALUES (?, ?, ?, ?, ?)'
+    );
     const insertMark = db.prepare(
       `INSERT INTO marks (answer_id, mention, position, accuracy, tone, strength, evidence, note, judge_error)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -216,6 +231,15 @@ export async function execute(runId) {
           model: apiOf(job.modelId),
           messages: [{ role: 'user', content: job.prompt.text }],
           maxTokens: settings.maxTokens,
+          // Поиск включается только в своём режиме
+          webSearch:
+            run.mode === 'web'
+              ? {
+                  engine: settings.searchEngine,
+                  maxResults: settings.searchMaxResults,
+                  maxUses: settings.searchMaxUses,
+                }
+              : undefined,
         });
       } catch (e) {
         failure = e instanceof GatewayError ? e.message : String(e && e.message ? e.message : e);
@@ -235,6 +259,13 @@ export async function execute(runId) {
         ).lastInsertRowid
       );
       if (answer) addCost(runId, answer.cost_rub);
+
+      // Источники из веб-поиска. Их может не быть: модель могла не искать
+      if (answer && Array.isArray(answer.sources)) {
+        for (const src of answer.sources) {
+          insertSource.run(answerId, src.url, src.title, src.domain, src.position);
+        }
+      }
 
       if (answer) {
         // Метки: упоминание и позицию считает код, остальное — судья
