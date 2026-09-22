@@ -81,9 +81,13 @@ fi
 
 if [ -d "$DIR/.git" ]; then
   step "Обновляю код"
-  git -C "$DIR" fetch --quiet origin "$BRANCH" || fail "Не удалось забрать обновления из GitHub."
-  git -C "$DIR" checkout --quiet "$BRANCH"
-  git -C "$DIR" reset --hard --quiet "origin/$BRANCH"
+  # Папка принадлежит пользователю программы, а скрипт работает от root.
+  # Git такое блокирует, поэтому объявляем папку доверенной — но только
+  # на время этих вызовов, без записи в общий конфиг.
+  GIT="git -c safe.directory=$DIR"
+  $GIT -C "$DIR" fetch --quiet origin "$BRANCH" || fail "Не удалось забрать обновления из GitHub."
+  $GIT -C "$DIR" checkout --quiet "$BRANCH"
+  $GIT -C "$DIR" reset --hard --quiet "origin/$BRANCH"
   info "обновлено до последней версии"
 else
   step "Забираю код из GitHub"

@@ -112,9 +112,18 @@ certbot --nginx -d монитор.ваш-домен.ру
 
 ### Обновление
 
+Тем же скриптом, что и установка:
+
 ```
-git pull && npm install && npm run build && systemctl restart ai-brand-monitor
+curl -fsSL https://raw.githubusercontent.com/zaripovilnur/Ai-brand-monitor/claude/new-session-64g8ci/deploy/install.sh -o install.sh
+bash install.sh
 ```
+
+Он заберёт свежий код, **пересоберёт интерфейс** и перезапустит программу.
+Ключ, пароль и база не трогаются.
+
+Одного `git pull` недостаточно: интерфейс лежит в собранном виде, и без
+пересборки браузер продолжит получать старую версию.
 
 Прогон, оборванный перезапуском, продолжится сам — уже полученные ответы
 не запрашиваются заново и второй раз не оплачиваются.
