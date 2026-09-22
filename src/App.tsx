@@ -115,7 +115,7 @@ type Row = {
   text: string;
   sources: Source[];
 };
-type Source = { url: string; title: string | null; domain: string | null; position: number };
+type Source = { url: string; title: string | null; domain: string | null; position: number; content: string | null };
 type RunPrompt = { id: number; text: string; cat: string };
 type RunPickerProps = { run: RunFull; runs: RunFull[]; setRunId: (id: number) => void; note?: string };
 type KpiProps = {
@@ -284,12 +284,20 @@ function agg(rows: Row[]) {
 // чтобы цифры в двух местах не могли разойтись.
 // Домен считается один раз на ответ: несколько ссылок на один сайт
 // в одном ответе — это один источник, а не несколько.
-type SourceEntry = { domain: string; answers: number; withBrand: number; byModel: Record<string, number> };
+type SourceEntry = { domain: string; answers: number; brandOnSite: number; checked: number; byModel: Record<string, number> };
 
-function brandDomainsOf(aliases: string): string[] {
+// Разбор алиасов — тем же правилом, что и на бэкенде (server/marking.js):
+// через запятую, без пустых. Разные правила означали бы разные цифры
+function parseAliases(aliases: string): string[] {
   return aliases
     .split(",")
-    .map((s) => s.trim().toLowerCase())
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function brandDomainsOf(aliases: string): string[] {
+  return parseAliases(aliases)
+    .map((s) => s.toLowerCase())
     .filter((s) => s.includes("."));
 }
 
@@ -297,17 +305,37 @@ function isOwnDomain(domain: string | null, brandDomains: string[]): boolean {
   return !!domain && brandDomains.some((bd) => domain === bd || domain.endsWith("." + bd));
 }
 
-function sourceStats(rows: Row[]) {
+// Назван ли бренд в тексте. Поиск подстроки без учёта регистра —
+// так же, как markMention на бэкенде
+function hasAlias(text: string | null, aliases: string[]): boolean {
+  if (!text) return false;
+  const hay = text.toLowerCase();
+  return aliases.some((a) => hay.includes(a.toLowerCase()));
+}
+
+function sourceStats(rows: Row[], aliases: string) {
+  const needles = parseAliases(aliases);
   const map = new Map<string, SourceEntry>();
   rows.forEach((r) => {
-    const seen = new Set<string>();
+    // Сначала группируем ссылки одного ответа по сайтам: две ссылки
+    // на один сайт — это один источник с двумя фрагментами
+    const byDomain = new Map<string, (string | null)[]>();
     r.sources.forEach((s) => {
-      if (!s.domain || seen.has(s.domain)) return;
-      seen.add(s.domain);
-      if (!map.has(s.domain)) map.set(s.domain, { domain: s.domain, answers: 0, withBrand: 0, byModel: {} });
-      const e = map.get(s.domain) as SourceEntry;
+      if (!s.domain) return;
+      if (!byDomain.has(s.domain)) byDomain.set(s.domain, []);
+      if (s.content) (byDomain.get(s.domain) as (string | null)[]).push(s.content);
+    });
+    byDomain.forEach((snippets, domain) => {
+      if (!map.has(domain)) map.set(domain, { domain, answers: 0, brandOnSite: 0, checked: 0, byModel: {} });
+      const e = map.get(domain) as SourceEntry;
       e.answers++;
-      if (r.mention === "yes") e.withBrand++;
+      // Ищем бренд во фрагменте самой страницы, а не в ответе модели.
+      // Иначе сайт конкурента получал бы плюс за то, что бренд назван
+      // где-то ещё в том же ответе
+      if (snippets.length) {
+        e.checked++;
+        if (snippets.some((t) => hasAlias(t, needles))) e.brandOnSite++;
+      }
       e.byModel[r.model] = (e.byModel[r.model] || 0) + 1;
     });
   });
@@ -319,6 +347,12 @@ function sourceStats(rows: Row[]) {
     withSources: rows.filter((r) => r.sources.length > 0).length,
     totalLinks: rows.reduce((n, r) => n + r.sources.length, 0),
   };
+}
+
+// Доля страниц сайта, где назван бренд. null — фрагментов нет, и это
+// не ноль: «не нашли» и «не смотрели» нельзя показывать одинаково
+function brandSitePct(e: SourceEntry): number | null {
+  return e.checked ? Math.round((e.brandOnSite / e.checked) * 100) : null;
 }
 
 
@@ -995,7 +1029,7 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
       {run.mode === "web" && (() => {
         // Считаем по всему прогону, а не по выбранной категории: иначе список
         // прыгает при смене фильтра. Фильтр моделей при этом учитывается.
-        const st = sourceStats(run.rows.filter(inModel));
+        const st = sourceStats(run.rows.filter(inModel), brand.aliases);
         const bd = brandDomainsOf(brand.aliases);
         if (!st.top.length) return null;
         return (
@@ -1012,7 +1046,7 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
                   {e.domain}
                 </span>
                 <span style={{ fontSize: 12, color: T.faint }}>
-                  с брендом {Math.round((e.withBrand / e.answers) * 100)}%
+                  {brandSitePct(e) === null ? "фрагмент не пришёл" : `бренд на сайте ${brandSitePct(e)}%`}
                 </span>
               </div>
             ))}
@@ -1117,7 +1151,7 @@ function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
   const brandDomains = brandDomainsOf(brand.aliases);
   const isOwn = (d: string | null) => isOwnDomain(d, brandDomains);
   const ownAnswers = rows.filter((r) => r.sources.some((s) => isOwn(s.domain))).length;
-  const { top, most, withSources, totalLinks } = sourceStats(rows);
+  const { top, most, withSources, totalLinks } = sourceStats(rows, brand.aliases);
 
   return (
     <div>
@@ -1163,7 +1197,7 @@ function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
           <section style={{ marginBottom: 44 }}>
             <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>Откуда берут информацию</h2>
             <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px" }}>
-              В скольких ответах встретился сайт · и в скольких из них назван бренд
+              В скольких ответах встретился сайт · и назван ли бренд в процитированном фрагменте
             </p>
             <table style={{ fontSize: 13 }}>
               <thead>
@@ -1175,7 +1209,7 @@ function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
                     </th>
                   ))}
                   <th style={{ width: 92, fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>Ответов</th>
-                  <th style={{ width: 110, fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>С брендом</th>
+                  <th style={{ width: 132, fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>Бренд на сайте</th>
                 </tr>
               </thead>
               <tbody>
@@ -1196,8 +1230,8 @@ function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
                       );
                     })}
                     <td style={{ textAlign: "center", padding: 5, fontVariantNumeric: "tabular-nums" }}>{e.answers}</td>
-                    <td style={{ textAlign: "center", padding: 5, color: T.muted, fontVariantNumeric: "tabular-nums" }}>
-                      {e.withBrand} · {Math.round((e.withBrand / e.answers) * 100)}%
+                    <td style={{ textAlign: "center", padding: 5, color: T.muted, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                      {brandSitePct(e) === null ? "—" : `${e.brandOnSite} из ${e.checked} · ${brandSitePct(e)}%`}
                     </td>
                   </tr>
                 ))}

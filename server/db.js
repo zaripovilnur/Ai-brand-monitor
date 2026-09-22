@@ -108,6 +108,17 @@ CREATE INDEX IF NOT EXISTS idx_prompts_brand  ON prompts(brand_id);
 CREATE INDEX IF NOT EXISTS idx_runs_brand     ON runs(brand_id);
 `);
 
+// Колонки, добавленные после первого релиза. Миграционных фреймворков нет,
+// поэтому просто досоздаём недостающее при старте: повторный запуск безвреден.
+function addColumn(table, column, decl) {
+  const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+}
+
+// Фрагмент процитированной страницы. По нему видно, назван ли бренд на самом
+// сайте, а не просто где-то в ответе модели
+addColumn('sources', 'content', 'TEXT');
+
 export const DB_PATH = DB_FILE;
 
 export function listTables() {

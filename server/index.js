@@ -31,6 +31,7 @@ import {
   SEARCH_ENGINES,
 } from './settings.js';
 import { createRun, getRun, listRuns, execute, resumeUnfinished } from './run.js';
+import { backfillSourceContent } from './backfill.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
@@ -43,6 +44,11 @@ seedIfEmpty();
 seedSettingsIfEmpty();
 // Прогон, оборванный на середине, продолжается сам — без повторной оплаты
 resumeUnfinished();
+// Фрагменты страниц для старых прогонов: достаём из уже сохранённых сырых ответов
+{
+  const done = backfillSourceContent();
+  if (done.filled) console.log(`[server] источники: восстановлено фрагментов — ${done.filled}`);
+}
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));

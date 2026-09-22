@@ -8,6 +8,7 @@ export const BASE_URL = (process.env.AITUNNEL_BASE_URL || 'https://api.aitunnel.
 const MAX_RETRIES = 3;      // до 3 повторов на 429 (CLAUDE.md)
 const BASE_DELAY_MS = 500;  // экспоненциальная задержка: 500, 1000, 2000
 const TIMEOUT_MS = 120000;
+const SOURCE_CONTENT_LIMIT = 2000; // фрагмент страницы: столько хранится и ищется
 
 export class GatewayError extends Error {
   constructor(message, { status = null, body = null, code = null } = {}) {
@@ -137,15 +138,7 @@ export async function chat({ model, messages, maxTokens, temperature, responseFo
     const usage = data.usage || null;
 
     // Источники из веб-поиска. Если модель искать не стала, аннотаций не будет вовсе.
-    const annotations = Array.isArray(message && message.annotations) ? message.annotations : [];
-    const sources = annotations
-      .filter((a) => a && a.type === 'url_citation' && a.url_citation && a.url_citation.url)
-      .map((a, i) => ({
-        url: String(a.url_citation.url),
-        title: a.url_citation.title ? String(a.url_citation.title) : null,
-        domain: domainOf(a.url_citation.url),
-        position: i + 1,
-      }));
+    const sources = sourcesOf(message);
 
     return {
       model_requested: exactModel,
@@ -166,6 +159,27 @@ export async function chat({ model, messages, maxTokens, temperature, responseFo
   }
 
   throw lastError || new GatewayError('Запрос к шлюзу не удался.', { code: 'unknown' });
+}
+
+/**
+ * Источники из аннотаций ответа. Отдельной функцией, потому что её же вызывает
+ * дозаполнение архива: разбор уже сохранённых сырых ответов идёт тем же путём,
+ * что и разбор свежего — иначе старые и новые прогоны разъедутся.
+ */
+export function sourcesOf(message) {
+  const annotations = Array.isArray(message && message.annotations) ? message.annotations : [];
+  return annotations
+    .filter((a) => a && a.type === 'url_citation' && a.url_citation && a.url_citation.url)
+    .map((a, i) => ({
+      url: String(a.url_citation.url),
+      title: a.url_citation.title ? String(a.url_citation.title) : null,
+      domain: domainOf(a.url_citation.url),
+      position: i + 1,
+      // Фрагмент процитированной страницы. По нему считается, назван ли бренд
+      // на самом сайте, а не просто в ответе модели. Длину ограничиваем:
+      // в базе и в ответе API нам нужен кусок для поиска, а не копия страницы
+      content: a.url_citation.content ? String(a.url_citation.content).slice(0, SOURCE_CONTENT_LIMIT) : null,
+    }));
 }
 
 /** Домен источника — по нему строится сводка по источникам */

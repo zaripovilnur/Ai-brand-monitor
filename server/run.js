@@ -73,13 +73,13 @@ function rowsOf(runId, snapshot) {
   const sourcesOf = new Map();
   for (const s of db
     .prepare(
-      `SELECT s.answer_id, s.url, s.title, s.domain, s.position
+      `SELECT s.answer_id, s.url, s.title, s.domain, s.position, s.content
          FROM sources s JOIN answers a ON a.id = s.answer_id
         WHERE a.run_id = ? ORDER BY s.answer_id, s.position`
     )
     .all(runId)) {
     if (!sourcesOf.has(s.answer_id)) sourcesOf.set(s.answer_id, []);
-    sourcesOf.get(s.answer_id).push({ url: s.url, title: s.title, domain: s.domain, position: s.position });
+    sourcesOf.get(s.answer_id).push({ url: s.url, title: s.title, domain: s.domain, position: s.position, content: s.content });
   }
   return db
     .prepare(
@@ -211,7 +211,7 @@ export async function execute(runId) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const insertSource = db.prepare(
-      'INSERT INTO sources (answer_id, url, title, domain, position) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO sources (answer_id, url, title, domain, position, content) VALUES (?, ?, ?, ?, ?, ?)'
     );
     const insertMark = db.prepare(
       `INSERT INTO marks (answer_id, mention, position, accuracy, tone, strength, evidence, note, judge_error)
@@ -263,7 +263,7 @@ export async function execute(runId) {
       // Источники из веб-поиска. Их может не быть: модель могла не искать
       if (answer && Array.isArray(answer.sources)) {
         for (const src of answer.sources) {
-          insertSource.run(answerId, src.url, src.title, src.domain, src.position);
+          insertSource.run(answerId, src.url, src.title, src.domain, src.position, src.content || null);
         }
       }
 
