@@ -143,6 +143,7 @@ type DashboardProps = {
   setFCat: (c: string) => void;
   setFMiss: (v: boolean) => void;
   MODELS: Model[];
+  brand: Brand;
 };
 type AnswersProps = {
   run: RunFull;
@@ -278,6 +279,48 @@ function agg(rows: Row[]) {
     wrong: men.filter((r) => r.accuracy === "wrong").length,
   };
 }
+
+// Сводка по источникам. Общая для дашборда и экрана «Источники»,
+// чтобы цифры в двух местах не могли разойтись.
+// Домен считается один раз на ответ: несколько ссылок на один сайт
+// в одном ответе — это один источник, а не несколько.
+type SourceEntry = { domain: string; answers: number; withBrand: number; byModel: Record<string, number> };
+
+function brandDomainsOf(aliases: string): string[] {
+  return aliases
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes("."));
+}
+
+function isOwnDomain(domain: string | null, brandDomains: string[]): boolean {
+  return !!domain && brandDomains.some((bd) => domain === bd || domain.endsWith("." + bd));
+}
+
+function sourceStats(rows: Row[]) {
+  const map = new Map<string, SourceEntry>();
+  rows.forEach((r) => {
+    const seen = new Set<string>();
+    r.sources.forEach((s) => {
+      if (!s.domain || seen.has(s.domain)) return;
+      seen.add(s.domain);
+      if (!map.has(s.domain)) map.set(s.domain, { domain: s.domain, answers: 0, withBrand: 0, byModel: {} });
+      const e = map.get(s.domain) as SourceEntry;
+      e.answers++;
+      if (r.mention === "yes") e.withBrand++;
+      e.byModel[r.model] = (e.byModel[r.model] || 0) + 1;
+    });
+  });
+  // При равном числе ответов — по алфавиту: иначе порядок скачет между экранами
+  const top = [...map.values()].sort((a, b) => b.answers - a.answers || a.domain.localeCompare(b.domain));
+  return {
+    top,
+    most: top.length ? top[0].answers : 0,
+    withSources: rows.filter((r) => r.sources.length > 0).length,
+    totalLinks: rows.reduce((n, r) => n + r.sources.length, 0),
+  };
+}
+
 
 function Num({ value, suffix, size }: NumProps) {
   return (
@@ -681,7 +724,7 @@ function Settings({ api, setApi, judgePrompt, saveJudge, promptVer, defaultJudge
   );
 }
 
-function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFModel, setFCat, setFMiss, MODELS }: DashboardProps) {
+function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFModel, setFCat, setFMiss, MODELS, brand }: DashboardProps) {
   const inModel = (r: Row) => fModel === "all" || r.model === fModel;
   const idx = runs.findIndex((r) => r.id === run.id);
   const prev = idx > 0 ? runs[idx - 1] : null;
@@ -949,6 +992,39 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
         </div>
       </section>
 
+      {run.mode === "web" && (() => {
+        // Считаем по всему прогону, а не по выбранной категории: иначе список
+        // прыгает при смене фильтра. Фильтр моделей при этом учитывается.
+        const st = sourceStats(run.rows.filter(inModel));
+        const bd = brandDomainsOf(brand.aliases);
+        if (!st.top.length) return null;
+        return (
+          <section style={{ background: T.surface, border: `1px solid ${T.rule}`, borderRadius: 10, padding: "20px 26px", marginBottom: 44 }}>
+            <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>На что опираются модели</h2>
+            <p style={{ fontSize: 13, color: T.muted, margin: "0 0 14px" }}>
+              Пять самых частых сайтов · в скольких ответах встретились
+            </p>
+            {st.top.slice(0, 5).map((e) => (
+              <div key={e.domain} style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "9px 0", borderTop: `1px solid ${T.rule}` }}>
+                <span style={{ fontFamily: SERIF, fontSize: 17, width: 46, color: T.ink, fontVariantNumeric: "tabular-nums" }}>{e.answers}</span>
+                <span style={{ fontSize: 14, flex: 1 }}>
+                  {isOwnDomain(e.domain, bd) ? <Dot cat="brand" /> : null}
+                  {e.domain}
+                </span>
+                <span style={{ fontSize: 12, color: T.faint }}>
+                  с брендом {Math.round((e.withBrand / e.answers) * 100)}%
+                </span>
+              </div>
+            ))}
+            <div style={{ marginTop: 16 }}>
+              <Btn small onClick={() => onGo("sources")}>
+                Посмотреть источники
+              </Btn>
+            </div>
+          </section>
+        );
+      })()}
+
       <section style={{ background: T.surface, border: `1px solid ${T.rule}`, borderRadius: 10, padding: "22px 26px" }}>
         <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>
           <Dot cat="brand" />
@@ -1038,33 +1114,10 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
 // это один источник, а не два.
 function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
   const rows = run.rows;
-  const withSrc = rows.filter((r) => r.sources.length > 0);
-  const totalLinks = rows.reduce((n, r) => n + r.sources.length, 0);
-
-  const brandDomains = brand.aliases
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.includes("."));
-  const isOwn = (d: string | null) =>
-    !!d && brandDomains.some((bd) => d === bd || d.endsWith("." + bd));
+  const brandDomains = brandDomainsOf(brand.aliases);
+  const isOwn = (d: string | null) => isOwnDomain(d, brandDomains);
   const ownAnswers = rows.filter((r) => r.sources.some((s) => isOwn(s.domain))).length;
-
-  type Entry = { domain: string; answers: number; withBrand: number; byModel: Record<string, number> };
-  const map = new Map<string, Entry>();
-  rows.forEach((r) => {
-    const seen = new Set<string>();
-    r.sources.forEach((s) => {
-      if (!s.domain || seen.has(s.domain)) return;
-      seen.add(s.domain);
-      if (!map.has(s.domain)) map.set(s.domain, { domain: s.domain, answers: 0, withBrand: 0, byModel: {} });
-      const e = map.get(s.domain) as Entry;
-      e.answers++;
-      if (r.mention === "yes") e.withBrand++;
-      e.byModel[r.model] = (e.byModel[r.model] || 0) + 1;
-    });
-  });
-  const top = [...map.values()].sort((a, b) => b.answers - a.answers);
-  const most = top.length ? top[0].answers : 0;
+  const { top, most, withSources, totalLinks } = sourceStats(rows);
 
   return (
     <div>
@@ -1086,10 +1139,10 @@ function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
             <Kpi
               first
               label="Ответы со ссылками"
-              value={rows.length ? Math.round((withSrc.length / rows.length) * 100) : 0}
+              value={rows.length ? Math.round((withSources / rows.length) * 100) : 0}
               suffix="%"
               lead="модель искала"
-              base={`${withSrc.length} из ${pl(rows.length, "ответа", "ответов", "ответов")}`}
+              base={`${withSources} из ${pl(rows.length, "ответа", "ответов", "ответов")}`}
             />
             <Kpi
               label="Разных сайтов"
@@ -2015,6 +2068,7 @@ export default function App() {
             setFCat={setFCat}
             setFMiss={setFMiss}
             MODELS={api.models}
+            brand={brand}
           />
         )}
         {tab === "answers" && run && (
