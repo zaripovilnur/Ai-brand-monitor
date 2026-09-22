@@ -53,7 +53,7 @@ function checkModel(model) {
  * Один запрос к модели через шлюз.
  * Запасные модели (fallback) не включаются никогда — в отчёт попали бы ответы не той модели.
  */
-export async function chat({ model, messages, maxTokens, temperature, responseFormat }) {
+export async function chat({ model, messages, maxTokens, temperature, responseFormat, webSearch }) {
   const key = apiKey();
   if (!key) {
     throw new GatewayError('Ключ AITUNNEL_API_KEY не задан в файле .env на бэкенде.', { code: 'no_key' });
@@ -69,6 +69,21 @@ export async function chat({ model, messages, maxTokens, temperature, responseFo
   const body = { model: exactModel, messages, max_tokens: Math.round(limit) };
   if (temperature !== undefined) body.temperature = temperature;
   if (responseFormat) body.response_format = responseFormat;
+
+  // Веб-поиск: серверный инструмент шлюза. Тарифицируется за фактические
+  // вызовы, поэтому число поисков и результатов ограничиваем явно.
+  if (webSearch) {
+    const parameters = {};
+    if (webSearch.engine && webSearch.engine !== 'auto') parameters.engine = webSearch.engine;
+    if (webSearch.maxResults) parameters.max_results = Number(webSearch.maxResults);
+    if (webSearch.maxUses) parameters.max_uses = Number(webSearch.maxUses);
+    if (webSearch.maxTotalResults) parameters.max_total_results = Number(webSearch.maxTotalResults);
+    body.tools = [
+      Object.keys(parameters).length
+        ? { type: 'aitunnel:web_search', parameters }
+        : { type: 'aitunnel:web_search' },
+    ];
+  }
 
   let lastError = null;
 
@@ -117,8 +132,20 @@ export async function chat({ model, messages, maxTokens, temperature, responseFo
     }
 
     const choice = (data.choices && data.choices[0]) || null;
-    const text = (choice && choice.message && choice.message.content) || '';
+    const message = (choice && choice.message) || null;
+    const text = (message && message.content) || '';
     const usage = data.usage || null;
+
+    // Источники из веб-поиска. Если модель искать не стала, аннотаций не будет вовсе.
+    const annotations = Array.isArray(message && message.annotations) ? message.annotations : [];
+    const sources = annotations
+      .filter((a) => a && a.type === 'url_citation' && a.url_citation && a.url_citation.url)
+      .map((a, i) => ({
+        url: String(a.url_citation.url),
+        title: a.url_citation.title ? String(a.url_citation.title) : null,
+        domain: domainOf(a.url_citation.url),
+        position: i + 1,
+      }));
 
     return {
       model_requested: exactModel,
@@ -128,11 +155,26 @@ export async function chat({ model, messages, maxTokens, temperature, responseFo
       cost_rub: usage && usage.cost_rub !== undefined ? usage.cost_rub : null,
       usage,
       finish_reason: choice ? choice.finish_reason : null,
+      sources,
+      // Сколько раз модель реально искала. Часть провайдеров поле не возвращает
+      web_search_requests:
+        usage && usage.server_tool_use && usage.server_tool_use.web_search_requests !== undefined
+          ? usage.server_tool_use.web_search_requests
+          : null,
       raw: data,
     };
   }
 
   throw lastError || new GatewayError('Запрос к шлюзу не удался.', { code: 'unknown' });
+}
+
+/** Домен источника — по нему строится сводка по источникам */
+export function domainOf(url) {
+  try {
+    return new URL(String(url)).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
 }
 
 function gatewayMessage(status, rawText) {

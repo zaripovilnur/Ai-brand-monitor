@@ -21,7 +21,15 @@ import {
   updatePrompt,
   deletePrompt,
 } from './store.js';
-import { getSettings, saveSettings, currentJudgePrompt, saveJudgePrompt, seedSettingsIfEmpty, MODES } from './settings.js';
+import {
+  getSettings,
+  saveSettings,
+  currentJudgePrompt,
+  saveJudgePrompt,
+  seedSettingsIfEmpty,
+  MODES,
+  SEARCH_ENGINES,
+} from './settings.js';
 import { createRun, getRun, listRuns, execute, resumeUnfinished } from './run.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -229,6 +237,9 @@ app.put('/api/settings', (req, res) => {
   if (patch.mode !== undefined && !MODES.includes(patch.mode)) {
     return res.status(400).json({ error: 'Неизвестный режим замера.' });
   }
+  if (patch.searchEngine !== undefined && !SEARCH_ENGINES.includes(patch.searchEngine)) {
+    return res.status(400).json({ error: 'Неизвестный движок поиска.' });
+  }
   if (Array.isArray(patch.models)) {
     for (const m of patch.models) {
       const api = String(m.api || '').trim();
@@ -265,6 +276,44 @@ app.post('/api/test-connection', async (req, res) => {
       ok: false,
       error: e instanceof GatewayError ? e.message : 'Не удалось связаться со шлюзом.',
     });
+  }
+});
+
+// Разведка режима поиска: один запрос с включённым веб-поиском.
+// Нужен, чтобы увидеть настоящую форму источников от шлюза.
+app.post('/api/test-web', async (req, res) => {
+  const body = req.body || {};
+  const settings = getSettings();
+  const question = String(body.prompt || '').trim();
+  if (!question) return res.status(400).json({ ok: false, error: 'Не задан текст запроса.' });
+  try {
+    const r = await chat({
+      model: body.model || (settings.models[0] || {}).api,
+      messages: [{ role: 'user', content: question }],
+      maxTokens: body.max_tokens || settings.maxTokens,
+      webSearch: {
+        engine: body.engine || settings.searchEngine,
+        maxResults: settings.searchMaxResults,
+        maxUses: settings.searchMaxUses,
+      },
+    });
+    res.json({
+      ok: true,
+      model_requested: r.model_requested,
+      model_returned: r.model_returned,
+      text: r.text,
+      sources: r.sources,
+      searches: r.web_search_requests,
+      latency_ms: r.latency_ms,
+      cost_rub: r.cost_rub,
+    });
+  } catch (e) {
+    if (e instanceof GatewayError) {
+      const clientSide = ['no_key', 'no_model', 'auto_model', 'floating_alias', 'no_max_tokens'].includes(e.code);
+      return res.status(clientSide ? 400 : 502).json({ ok: false, error: e.message, code: e.code, status: e.status });
+    }
+    console.error('[test-web]', e);
+    res.status(500).json({ ok: false, error: 'Внутренняя ошибка сервера.', code: 'internal' });
   }
 });
 

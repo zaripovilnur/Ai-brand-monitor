@@ -11,8 +11,14 @@ import { BASE_URL } from './aitunnel.js';
 // двух режимов нигде не смешиваются.
 export const MODES = ['parametric', 'web'];
 
+// Движки поиска шлюза. auto — нативный поиск провайдера модели, если он есть
+export const SEARCH_ENGINES = ['auto', 'native', 'exa', 'parallel', 'perplexity'];
+
 const DEFAULTS = {
   mode: 'parametric',
+  searchEngine: 'auto',
+  searchMaxResults: 5,
+  searchMaxUses: 3,
   provider: 'aitunnel',
   baseUrl: BASE_URL,
   models: SEED_MODELS,
