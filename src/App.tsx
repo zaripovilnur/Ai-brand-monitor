@@ -113,7 +113,9 @@ type Row = {
   note: string | null;
   judgeError: string | null;
   text: string;
+  sources: Source[];
 };
+type Source = { url: string; title: string | null; domain: string | null; position: number };
 type RunPrompt = { id: number; text: string; cat: string };
 type RunPickerProps = { run: RunFull; runs: RunFull[]; setRunId: (id: number) => void; note?: string };
 type KpiProps = {
@@ -216,6 +218,13 @@ type SettingsProps = {
   saveJudge: (text: string) => void;
   promptVer: number;
   defaultJudgePrompt: string;
+};
+type SourcesProps = {
+  run: RunFull;
+  runs: RunFull[];
+  setRunId: (id: number) => void;
+  brand: Brand;
+  MODELS: Model[];
 };
 type ScaleBlockProps = {
   title: string;
@@ -1023,7 +1032,134 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
   );
 }
 
+
+// Экран «Источники». Собирается из тех же данных прогона, что и дашборд.
+// Домен считается один раз на ответ: две ссылки на один сайт в одном ответе —
+// это один источник, а не два.
+function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
+  const rows = run.rows;
+  const withSrc = rows.filter((r) => r.sources.length > 0);
+  const totalLinks = rows.reduce((n, r) => n + r.sources.length, 0);
+
+  const brandDomains = brand.aliases
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes("."));
+  const isOwn = (d: string | null) =>
+    !!d && brandDomains.some((bd) => d === bd || d.endsWith("." + bd));
+  const ownAnswers = rows.filter((r) => r.sources.some((s) => isOwn(s.domain))).length;
+
+  type Entry = { domain: string; answers: number; withBrand: number; byModel: Record<string, number> };
+  const map = new Map<string, Entry>();
+  rows.forEach((r) => {
+    const seen = new Set<string>();
+    r.sources.forEach((s) => {
+      if (!s.domain || seen.has(s.domain)) return;
+      seen.add(s.domain);
+      if (!map.has(s.domain)) map.set(s.domain, { domain: s.domain, answers: 0, withBrand: 0, byModel: {} });
+      const e = map.get(s.domain) as Entry;
+      e.answers++;
+      if (r.mention === "yes") e.withBrand++;
+      e.byModel[r.model] = (e.byModel[r.model] || 0) + 1;
+    });
+  });
+  const top = [...map.values()].sort((a, b) => b.answers - a.answers);
+  const most = top.length ? top[0].answers : 0;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 6 }}>
+        <h1 style={{ font: `400 26px ${SERIF}`, margin: 0 }}>Источники</h1>
+        <RunPicker run={run} runs={runs} setRunId={setRunId} />
+      </div>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 24px", maxWidth: "72ch" }}>
+        На какие сайты опирались модели, отвечая на ваши запросы. Один сайт в одном ответе считается один раз, сколько бы ссылок на него ни было.
+      </p>
+
+      {totalLinks === 0 ? (
+        <p style={{ fontSize: 14, color: T.muted, padding: "20px 0" }}>
+          В этом прогоне модели не сослались ни на один источник.
+        </p>
+      ) : (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "24px 0", borderTop: `1px solid ${T.rule}`, borderBottom: `1px solid ${T.rule}`, padding: "24px 0", marginBottom: 34 }}>
+            <Kpi
+              first
+              label="Ответы со ссылками"
+              value={rows.length ? Math.round((withSrc.length / rows.length) * 100) : 0}
+              suffix="%"
+              lead="модель искала"
+              base={`${withSrc.length} из ${pl(rows.length, "ответа", "ответов", "ответов")}`}
+            />
+            <Kpi
+              label="Разных сайтов"
+              value={top.length}
+              lead="во всём прогоне"
+              base={`${pl(totalLinks, "ссылка", "ссылки", "ссылок")} всего`}
+            />
+            <Kpi
+              label="Свой сайт"
+              value={rows.length ? Math.round((ownAnswers / rows.length) * 100) : 0}
+              suffix="%"
+              lead="ссылка на ваш домен"
+              base={brandDomains.length ? `${ownAnswers} из ${pl(rows.length, "ответа", "ответов", "ответов")}` : "домен не задан в алиасах"}
+              alarm={brandDomains.length > 0 && ownAnswers === 0}
+            />
+          </div>
+
+          <section style={{ marginBottom: 44 }}>
+            <h2 style={{ font: `400 17px ${SANS}`, margin: "0 0 4px" }}>Откуда берут информацию</h2>
+            <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px" }}>
+              В скольких ответах встретился сайт · и в скольких из них назван бренд
+            </p>
+            <table style={{ fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>Сайт</th>
+                  {run.models.map((id) => (
+                    <th key={id} style={{ width: 92, fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>
+                      {MODELS.find((x) => x.id === id)!.name}
+                    </th>
+                  ))}
+                  <th style={{ width: 92, fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>Ответов</th>
+                  <th style={{ width: 110, fontWeight: 400, color: T.faint, fontSize: 12, padding: "0 0 8px" }}>С брендом</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top.map((e) => (
+                  <tr key={e.domain} style={{ borderTop: `1px solid ${T.rule}` }}>
+                    <td style={{ padding: "9px 12px 9px 0" }}>
+                      {isOwn(e.domain) ? <Dot cat="brand" /> : null}
+                      {e.domain}
+                    </td>
+                    {run.models.map((id) => {
+                      const v = e.byModel[id] || 0;
+                      return (
+                        <td key={id} style={{ textAlign: "center", padding: 5 }}>
+                          <span style={{ display: "block", padding: "5px 0", borderRadius: 4, background: v === 0 ? "#F5F5F2" : `rgba(61,59,214,${(0.07 + (v / most) * 0.42).toFixed(2)})`, color: v === 0 ? T.faint : T.ink, fontVariantNumeric: "tabular-nums" }}>
+                            {v}
+                          </span>
+                        </td>
+                      );
+                    })}
+                    <td style={{ textAlign: "center", padding: 5, fontVariantNumeric: "tabular-nums" }}>{e.answers}</td>
+                    <td style={{ textAlign: "center", padding: 5, color: T.muted, fontVariantNumeric: "tabular-nums" }}>
+                      {e.withBrand} · {Math.round((e.withBrand / e.answers) * 100)}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+
 function exportXlsx(rows: Row[], prompts: RunPrompt[], brand: Brand, runAt: string, MODELS: Model[]) {
+  const withSources = rows.some((r) => r.sources.length > 0);
   const nameOf = (id: number) => prompts.find((p) => p.id === id)?.text || id;
   const modelOf = (id: string) => MODELS.find((m) => m.id === id)?.name || id;
 
@@ -1039,6 +1175,7 @@ function exportXlsx(rows: Row[], prompts: RunPrompt[], brand: Brand, runAt: stri
     Тональность: r.mention === "yes" ? LBL[r.tone!] : "",
     "Сила рекомендации": r.strength ? LBL[r.strength] : "",
     "Ответ модели": r.text,
+    ...(withSources ? { Источники: r.sources.map((s) => s.url).join("\n") } : {}),
   }));
 
   const map = new Map<string, Row[]>();
@@ -1065,8 +1202,11 @@ function exportXlsx(rows: Row[], prompts: RunPrompt[], brand: Brand, runAt: stri
 
   const ws1 = XLSX.utils.json_to_sheet(answers);
   ws1["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 46 }, { wch: 12 }, { wch: 8 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 100 }];
+  if (withSources) ws1["!cols"].push({ wch: 60 });
   ws1["!views"] = [{ state: "frozen", ySplit: 1 }];
-  ws1["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: answers.length, c: 10 } }) };
+  ws1["!autofilter"] = {
+    ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: answers.length, c: withSources ? 11 : 10 } }),
+  };
   XLSX.utils.book_append_sheet(wb, ws1, "Ответы");
 
   const ws2 = XLSX.utils.json_to_sheet(summary);
@@ -1245,6 +1385,24 @@ function Answers({ run, runs, setRunId, brand, prompts, facts, fModel, setFModel
                   <div>Точность — {r.accuracy ? `${LBL[r.accuracy]}, сверено с ${pl(facts.length, "фактом", "фактами", "фактами")}` : "проверяемых утверждений нет"}</div>
                   <div>Тональность — {r.mention === "yes" ? LBL[r.tone!] : "не применима"}</div>
                   <div>Сила рекомендации — {r.strength ? LBL[r.strength] : "не применима"}</div>
+                  {r.sources.length > 0 && (
+                    <div style={{ marginTop: 6 }}>
+                      Источники — {pl(r.sources.length, "ссылка", "ссылки", "ссылок")}
+                      {r.sources.map((s) => (
+                        <div key={s.url} style={{ paddingLeft: 14 }}>
+                          <a
+                            href={s.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ color: T.accent, textDecoration: "underline" }}
+                          >
+                            {s.title || s.domain || s.url}
+                          </a>
+                          {s.title && s.domain ? <span style={{ color: T.faint }}> · {s.domain}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1769,7 +1927,13 @@ export default function App() {
       .catch(console.error);
 
   const nav = [
-    { group: "Отчёт", items: [["dash", "Дашборд"], ["answers", "Ответы"]] },
+    {
+      group: "Отчёт",
+      items:
+        api?.mode === "web"
+          ? [["dash", "Дашборд"], ["answers", "Ответы"], ["sources", "Источники"]]
+          : [["dash", "Дашборд"], ["answers", "Ответы"]],
+    },
     {
       group: "Настройка",
       items: [["prompts", "Запросы"], ["facts", "База фактов"], ["brand", "Бренд"], ["settings", "Подключение"]],
@@ -1871,6 +2035,9 @@ export default function App() {
             setOpen={setOpen}
             MODELS={api.models}
           />
+        )}
+        {tab === "sources" && run && api.mode === "web" && (
+          <Sources run={run} runs={runs} setRunId={setRunId} brand={brand} MODELS={api.models} />
         )}
         {tab === "run" && (
           <RunConfig
