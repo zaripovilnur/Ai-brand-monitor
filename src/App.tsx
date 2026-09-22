@@ -161,6 +161,9 @@ type AnswersProps = {
 };
 type ApiSettings = {
   mode: string;
+  searchEngine: string;
+  searchMaxResults: number;
+  searchMaxUses: number;
   provider: string;
   baseUrl: string;
   models: Model[];
@@ -386,7 +389,13 @@ function Btn({ children, onClick, primary, small, disabled }: BtnProps) {
 }
 
 function RunConfig({ sel, setSel, repeats, setRepeats, prompts, requests, progress, onRun, api, promptVer, onGo }: RunConfigProps) {
-  const cost = Math.round(requests * 0.62);
+  // Оплата токенов — как в прототипе. В режиме поиска сверху идёт плата за
+  // каждый фактический вызов поиска: ориентир 1,4 ₽ (Exa при пяти результатах),
+  // до searchMaxUses раз на запрос. Модель может не искать вовсе, поэтому
+  // показываем вилку, а не одно число.
+  const tokenCost = Math.round(requests * 0.62);
+  const searchCost = Math.round(requests * (api.searchMaxUses || 0) * 1.4);
+  const cost = api.mode === "web" ? `${tokenCost}–${tokenCost + searchCost}` : tokenCost;
   // На каждый ответ уходит два обращения к шлюзу — к модели и к судье — плюс
   // паузы между ними. По факту около 6,5 секунды на ответ, запросы идут по очереди.
   const mins = Math.max(1, Math.round((requests * 6.5) / 60));
@@ -442,7 +451,11 @@ function RunConfig({ sel, setSel, repeats, setRepeats, prompts, requests, progre
         <div>
           <div style={{ fontSize: 12, color: T.muted, marginBottom: 6 }}>Ориентировочно</div>
           <Num value={cost} suffix=" ₽" />
-          <div style={{ fontSize: 12, color: T.faint, marginTop: 6, maxWidth: 190, lineHeight: 1.5 }}>Точная сумма придёт от шлюза после прогона</div>
+          <div style={{ fontSize: 12, color: T.faint, marginTop: 6, maxWidth: 190, lineHeight: 1.5 }}>
+            {api.mode === "web"
+              ? "Нижняя граница — если модели не станут искать, верхняя — если выполнят максимум поисков. Найденные страницы тоже оплачиваются как токены. Точная сумма придёт от шлюза после прогона"
+              : "Точная сумма придёт от шлюза после прогона"}
+          </div>
         </div>
       </div>
 
@@ -1603,6 +1616,11 @@ function Method({ mode }: { mode: string }) {
         <li>
           <span style={{ color: T.ink }}>Разметку ставит модель, а не человек.</span> Тональность, точность и силу рекомендации определяет модель-судья по фиксированным правилам. На крайних значениях она надёжна, на границе «просто упоминает» и «советует наравне» — ошибается. Для каждой оценки в разборе показан фрагмент, на котором она основана.
         </li>
+        {mode === "web" && (
+          <li>
+            <span style={{ color: T.ink }}>Модели сравниваются вместе со своими поисковиками.</span> Каждая ищет встроенным движком своего провайдера, поэтому разница между моделями включает и разницу между поисковыми системами. Так ближе к тому, что видит живой пользователь, но отделить вклад модели от вклада поиска по этим цифрам нельзя.
+          </li>
+        )}
       </ul>
     </div>
   );
