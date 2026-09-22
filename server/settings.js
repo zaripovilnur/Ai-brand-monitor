@@ -6,7 +6,13 @@ import { BASE_URL } from './aitunnel.js';
 // Настройки прогона и версии промпта судьи. Строки моделей правятся
 // на экране «Подключение», а не в коде.
 
+// Режим замера. 'parametric' — из знаний модели, веб-поиск выключен.
+// 'web' — с веб-поиском: отвечает на другой вопрос, поэтому прогоны
+// двух режимов нигде не смешиваются.
+export const MODES = ['parametric', 'web'];
+
 const DEFAULTS = {
+  mode: 'parametric',
   provider: 'aitunnel',
   baseUrl: BASE_URL,
   models: SEED_MODELS,

@@ -160,6 +160,7 @@ type AnswersProps = {
   MODELS: Model[];
 };
 type ApiSettings = {
+  mode: string;
   provider: string;
   baseUrl: string;
   models: Model[];
@@ -181,6 +182,7 @@ type Run = {
   cost_rub: number;
 };
 type RunFull = Run & {
+  mode: string;
   modelApis: string[];
   short: string;
   repeats: number;
@@ -408,7 +410,7 @@ function RunConfig({ sel, setSel, repeats, setRepeats, prompts, requests, progre
   return (
     <div style={{ maxWidth: 640 }}>
       <h1 style={{ font: `400 26px ${SERIF}`, margin: "0 0 6px" }}>Новый прогон</h1>
-      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 28px" }}>Веб-поиск выключен — так ответы сравнимы между собой и между неделями.</p>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 28px" }}>{api.mode === "web" ? "Веб-поиск включён — замер показывает, что модели находят сегодня, а не что знают." : "Веб-поиск выключен — так ответы сравнимы между собой и между неделями."}</p>
 
       <h2 style={{ font: `400 15px ${SANS}`, margin: "0 0 12px" }}>Модели</h2>
       <div style={{ marginBottom: 28 }}>
@@ -520,6 +522,20 @@ function Settings({ api, setApi, judgePrompt, saveJudge, promptVer, defaultJudge
       <h1 style={{ font: `400 26px ${SERIF}`, margin: "0 0 8px" }}>Подключение</h1>
       <p style={{ fontSize: 14, color: T.muted, margin: "0 0 32px", lineHeight: 1.7, maxWidth: "70ch" }}>
         Один ключ на все модели: и на те, что отвечают, и на модель-судью. Отдельной интеграции для судьи не нужно — это запрос к тому же шлюзу.
+      </p>
+
+      <h2 style={{ font: `400 18px ${SANS}`, margin: "0 0 8px" }}>Режим замера</h2>
+      <p style={{ fontSize: 13, color: T.muted, margin: "0 0 16px", maxWidth: "70ch", lineHeight: 1.6 }}>
+        Два режима отвечают на разные вопросы, поэтому их прогоны нигде не смешиваются: отчёты показывают только прогоны выбранного режима.
+      </p>
+      <div style={{ marginBottom: 8 }}>
+        <select value={api.mode} onChange={(e) => setApi({ ...api, mode: e.target.value })} style={{ width: "100%" }}>
+          <option value="parametric">Из знаний модели — веб-поиск выключен</option>
+          <option value="web">С веб-поиском — что модели находят сегодня</option>
+        </select>
+      </div>
+      <p style={{ fontSize: 12, color: T.faint, margin: "0 0 32px", lineHeight: 1.6, maxWidth: "70ch" }}>
+        Смена режима не портит накопленное: прежние прогоны остаются на месте и снова появятся, когда вы вернёте режим обратно.
       </p>
 
       <h2 style={{ font: `400 18px ${SANS}`, margin: "0 0 16px" }}>Шлюз</h2>
@@ -701,7 +717,7 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
       </div>
       <p style={{ fontSize: 13, color: T.muted, margin: "0 0 24px" }}>
         {pl(run.prompts.length, "запрос", "запроса", "запросов")} · {pl(run.models.length, "модель", "модели", "моделей")} ·{" "}
-        {pl(run.repeats, "повтор", "повтора", "повторов")} · без веб-поиска · {pl(run.rows.length, "ответ", "ответа", "ответов")}
+        {pl(run.repeats, "повтор", "повтора", "повторов")} · {run.mode === "web" ? "с веб-поиском" : "без веб-поиска"} · {pl(run.rows.length, "ответ", "ответа", "ответов")}
         {fModel !== "all" && ` · показана только ${MODELS.find((x) => x.id === fModel)!.name}`}
       </p>
 
@@ -1457,7 +1473,7 @@ function ScaleBlock({ title, question, scale, base, skip }: ScaleBlockProps) {
   );
 }
 
-function Method() {
+function Method({ mode }: { mode: string }) {
   return (
     <div style={{ maxWidth: 820 }}>
       <h1 style={{ font: `400 26px ${SERIF}`, margin: "0 0 8px" }}>Как считаются метрики</h1>
@@ -1469,7 +1485,11 @@ function Method() {
       <ol style={{ fontSize: 14, lineHeight: 1.8, color: T.ink, paddingLeft: 20, margin: "0 0 12px", maxWidth: "70ch" }}>
         <li>Каждый активный запрос отправляется в каждую выбранную модель.</li>
         <li>Запрос повторяется несколько раз — модели отвечают по-разному на один и тот же вопрос, и один ответ это шум, а не замер.</li>
-        <li>Веб-поиск выключен. Модель отвечает из того, что усвоила при обучении, поэтому результат отражает её знание о бренде, а не сегодняшнюю выдачу.</li>
+        <li>
+          {mode === "web"
+            ? "Веб-поиск включён. Модель ищет в интернете и отвечает по найденному, поэтому результат отражает сегодняшнюю выдачу, а не её знание о бренде."
+            : "Веб-поиск выключен. Модель отвечает из того, что усвоила при обучении, поэтому результат отражает её знание о бренде, а не сегодняшнюю выдачу."}
+        </li>
         <li>Каждый ответ сохраняется целиком и размечается судьёй.</li>
       </ol>
       <p style={{ fontSize: 13, color: T.faint, margin: "0 0 36px", maxWidth: "70ch", lineHeight: 1.6 }}>
@@ -1567,7 +1587,15 @@ function Method() {
           <span style={{ color: T.ink }}>Ответ через API отличается от того, что видит пользователь в приложении модели.</span> Там свой системный промпт, поиск и память. Мы измеряем близкий прокси, а не буквальный пользовательский опыт — расхождение с личной проверкой нормально.
         </li>
         <li>
-          <span style={{ color: T.ink }}>Источники не собираются.</span> Без веб-поиска модель не на что ссылаться, а ссылки, которые она выдаёт по запросу, ведут в никуда. Поэтому в отчёте их нет.
+          {mode === "web" ? (
+            <>
+              <span style={{ color: T.ink }}>Источники собираются.</span> Модель ищет в интернете, и ссылки, на которые она опирается, сохраняются вместе с ответом. Они показаны в разборе ответа и собраны на экране «Источники».
+            </>
+          ) : (
+            <>
+              <span style={{ color: T.ink }}>Источники не собираются.</span> Без веб-поиска модель не на что ссылаться, а ссылки, которые она выдаёт по запросу, ведут в никуда. Поэтому в отчёте их нет.
+            </>
+          )}
         </li>
         <li>
           <span style={{ color: T.ink }}>Малая выборка даёт шум.</span> При трёх запросах в категории недельные колебания метрики могут доходить до 18 пунктов без каких-либо изменений в реальности. Рабочий минимум — 10–15 запросов на категорию.
@@ -1606,11 +1634,12 @@ export default function App() {
   const active = prompts.filter((p) => p.active);
   const requests = active.length * sel.length * repeats;
 
-  const loadRuns = () =>
-    req("/api/runs?rows=1")
+  // Только прогоны текущего режима: замеры двух режимов не сравнимы между собой
+  const loadRuns = (mode: string) =>
+    req(`/api/runs?rows=1&mode=${mode}`)
       .then((list: RunFull[]) => {
         setRuns(list);
-        if (list.length) setRunId((prev) => prev ?? list[list.length - 1].id);
+        setRunId(list.length ? list[list.length - 1].id : null);
       })
       .catch(console.error);
 
@@ -1618,7 +1647,7 @@ export default function App() {
     req("/api/brand").then(setBrandState).catch(console.error);
     req("/api/facts").then(setFacts).catch(console.error);
     req("/api/prompts").then(setPrompts).catch(console.error);
-    loadRuns();
+    // Прогоны грузятся после настроек: нужен текущий режим
     // Прогон мог запустить коллега — показываем его всем на экране прогресса
     req("/api/runs")
       .then((list: Run[]) => {
@@ -1636,6 +1665,7 @@ export default function App() {
         setDefaultJudgePrompt(s.defaultJudgePrompt);
         setPromptVer(s.judgePromptVersion);
         setSel(s.models.map((m) => m.id));
+        loadRuns(s.mode);
       })
       .catch(console.error);
   }, []);
@@ -1650,7 +1680,7 @@ export default function App() {
           if (r.status !== "running") {
             setActiveRun(null);
             setRunId(r.id);
-            loadRuns().then(() => setTab("dash"));
+            loadRuns(api ? api.mode : "parametric").then(() => setTab("dash"));
           }
         })
         .catch(console.error);
@@ -1659,7 +1689,12 @@ export default function App() {
   }, [activeRun]);
 
   function setApi(next: ApiSettings) {
+    const modeChanged = !api || api.mode !== next.mode;
     setApiState(next);
+    if (modeChanged) {
+      setTab("dash");
+      loadRuns(next.mode);
+    }
     if (apiTimer.current) window.clearTimeout(apiTimer.current);
     apiTimer.current = window.setTimeout(() => {
       req("/api/settings", send("PUT", next)).catch(console.error);
@@ -1848,7 +1883,7 @@ export default function App() {
           <Prompts prompts={prompts} onAdd={addPrompts} onUpdate={updatePrompt} onDelete={deletePrompt} />
         )}
         {tab === "facts" && <Facts facts={facts} onAdd={addFact} onDelete={deleteFact} />}
-        {tab === "method" && <Method />}
+        {tab === "method" && <Method mode={api.mode} />}
         {tab === "brand" && <BrandSetup brand={brand} setBrand={setBrand} />}
       </main>
     </div>

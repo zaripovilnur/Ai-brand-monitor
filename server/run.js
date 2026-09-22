@@ -3,7 +3,7 @@ import { chat, GatewayError, gap } from './aitunnel.js';
 import { judgeAnswer } from './judge.js';
 import { markMention, markPosition } from './marking.js';
 import { getBrand, listFacts, listPrompts } from './store.js';
-import { getSettings, currentJudgePrompt } from './settings.js';
+import { getSettings, currentJudgePrompt, MODES } from './settings.js';
 
 // Прогон: долгая операция. Идёт в фоне, состояние живёт в базе,
 // поэтому его видно из любого запроса и он переживает перезапуск.
@@ -31,6 +31,7 @@ export function createRun({ models, repeats }) {
   const chosen = (models || []).filter((id) => settings.models.some((m) => m.id === id));
   if (!chosen.length) throw new Error('Не выбрано ни одной модели.');
 
+  const mode = MODES.includes(settings.mode) ? settings.mode : 'parametric';
   const reps = Math.max(1, Math.min(5, Number(repeats) || 1));
   const active = listPrompts().filter((p) => p.active);
   if (!active.length) throw new Error('Нет ни одного включённого запроса.');
@@ -38,7 +39,7 @@ export function createRun({ models, repeats }) {
   const info = db
     .prepare(
       `INSERT INTO runs (brand_id, started_at, models, repeats, judge_model, judge_prompt_version, mode, cost_rub, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'parametric', 0, 'running')`
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'running')`
     )
     .run(
       brand.id,
@@ -55,7 +56,8 @@ export function createRun({ models, repeats }) {
       }),
       reps,
       settings.judgeModel,
-      judge.version
+      judge.version,
+      mode
     );
 
   return Number(info.lastInsertRowid);
@@ -118,6 +120,7 @@ export function getRun(id, { withRows = false } = {}) {
     // Точные строки выбранных моделей: по ним видно подмену версии
     modelApis: snapshot.selected.map((id) => (snapshot.models.find((m) => m.id === id) || {}).api || id),
     repeats: row.repeats,
+    mode: row.mode,
     judge_model: row.judge_model,
     judge_prompt_version: row.judge_prompt_version,
     cost_rub: row.cost_rub,
@@ -135,11 +138,16 @@ export function getRun(id, { withRows = false } = {}) {
   };
 }
 
-export function listRuns(opts) {
-  return db
-    .prepare('SELECT id FROM runs ORDER BY id')
-    .all()
-    .map((r) => getRun(r.id, opts));
+/**
+ * Прогоны одного режима. Без фильтра в отчёт попали бы вперемешку замеры
+ * «что модель знает» и «что модель нашла сегодня» — это разные величины.
+ */
+export function listRuns(opts = {}) {
+  const { mode, ...rest } = opts;
+  const rows = mode
+    ? db.prepare('SELECT id FROM runs WHERE mode = ? ORDER BY id').all(mode)
+    : db.prepare('SELECT id FROM runs ORDER BY id').all();
+  return rows.map((r) => getRun(r.id, rest));
 }
 
 // Что ещё не сделано: сравниваем план со списком уже сохранённых ответов

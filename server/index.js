@@ -21,7 +21,7 @@ import {
   updatePrompt,
   deletePrompt,
 } from './store.js';
-import { getSettings, saveSettings, currentJudgePrompt, saveJudgePrompt, seedSettingsIfEmpty } from './settings.js';
+import { getSettings, saveSettings, currentJudgePrompt, saveJudgePrompt, seedSettingsIfEmpty, MODES } from './settings.js';
 import { createRun, getRun, listRuns, execute, resumeUnfinished } from './run.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -226,6 +226,9 @@ app.get('/api/settings', (req, res) => {
 
 app.put('/api/settings', (req, res) => {
   const patch = req.body || {};
+  if (patch.mode !== undefined && !MODES.includes(patch.mode)) {
+    return res.status(400).json({ error: 'Неизвестный режим замера.' });
+  }
   if (Array.isArray(patch.models)) {
     for (const m of patch.models) {
       const api = String(m.api || '').trim();
@@ -268,8 +271,10 @@ app.post('/api/test-connection', async (req, res) => {
 // --- Прогоны ---
 
 app.get('/api/runs', (req, res) => {
-  // rows=1 — вместе с размеченными ответами: их ждут дашборд и лента ответов
-  res.json(listRuns({ withRows: req.query.rows === '1' }));
+  // rows=1 — вместе с размеченными ответами: их ждут дашборд и лента ответов.
+  // mode — только прогоны одного режима, иначе отчёты смешают разные величины.
+  const mode = MODES.includes(req.query.mode) ? req.query.mode : undefined;
+  res.json(listRuns({ withRows: req.query.rows === '1', mode }));
 });
 
 app.post('/api/runs', (req, res) => {
