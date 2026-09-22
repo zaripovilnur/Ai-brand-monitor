@@ -284,7 +284,8 @@ function agg(rows: Row[]) {
 // чтобы цифры в двух местах не могли разойтись.
 // Домен считается один раз на ответ: несколько ссылок на один сайт
 // в одном ответе — это один источник, а не несколько.
-type SourceEntry = { domain: string; answers: number; brandOnSite: number; checked: number; byModel: Record<string, number> };
+type SourcePage = { url: string; title: string | null; content: string | null; hasBrand: boolean };
+type SourceEntry = { domain: string; answers: number; brandOnSite: number; checked: number; byModel: Record<string, number>; pages: SourcePage[] };
 
 // Разбор алиасов — тем же правилом, что и на бэкенде (server/marking.js):
 // через запятую, без пустых. Разные правила означали бы разные цифры
@@ -318,25 +319,32 @@ function sourceStats(rows: Row[], aliases: string) {
   const map = new Map<string, SourceEntry>();
   rows.forEach((r) => {
     // Сначала группируем ссылки одного ответа по сайтам: две ссылки
-    // на один сайт — это один источник с двумя фрагментами
-    const byDomain = new Map<string, (string | null)[]>();
+    // на один сайт — это один источник с двумя страницами
+    const byDomain = new Map<string, Source[]>();
     r.sources.forEach((s) => {
       if (!s.domain) return;
       if (!byDomain.has(s.domain)) byDomain.set(s.domain, []);
-      if (s.content) (byDomain.get(s.domain) as (string | null)[]).push(s.content);
+      (byDomain.get(s.domain) as Source[]).push(s);
     });
-    byDomain.forEach((snippets, domain) => {
-      if (!map.has(domain)) map.set(domain, { domain, answers: 0, brandOnSite: 0, checked: 0, byModel: {} });
+    byDomain.forEach((list, domain) => {
+      if (!map.has(domain)) map.set(domain, { domain, answers: 0, brandOnSite: 0, checked: 0, byModel: {}, pages: [] });
       const e = map.get(domain) as SourceEntry;
       e.answers++;
-      // Ищем бренд во фрагменте самой страницы, а не в ответе модели.
+      // Ищем бренд в выдержке самой страницы, а не в ответе модели.
       // Иначе сайт конкурента получал бы плюс за то, что бренд назван
       // где-то ещё в том же ответе
-      if (snippets.length) {
+      const withText = list.filter((s) => s.content);
+      if (withText.length) {
         e.checked++;
-        if (snippets.some((t) => hasAlias(t, needles))) e.brandOnSite++;
+        if (withText.some((s) => hasAlias(s.content, needles))) e.brandOnSite++;
       }
       e.byModel[r.model] = (e.byModel[r.model] || 0) + 1;
+      // Страницы для разбора «за что засчитано». Повторы по адресу не нужны:
+      // одну и ту же страницу модели цитируют по многу раз
+      list.forEach((s) => {
+        if (e.pages.some((p) => p.url === s.url)) return;
+        e.pages.push({ url: s.url, title: s.title, content: s.content, hasBrand: hasAlias(s.content, needles) });
+      });
     });
   });
   // При равном числе ответов — по алфавиту: иначе порядок скачет между экранами
@@ -349,10 +357,14 @@ function sourceStats(rows: Row[], aliases: string) {
   };
 }
 
-// Доля страниц сайта, где назван бренд. null — фрагментов нет, и это
-// не ноль: «не нашли» и «не смотрели» нельзя показывать одинаково
-function brandSitePct(e: SourceEntry): number | null {
-  return e.checked ? Math.round((e.brandOnSite / e.checked) * 100) : null;
+// Сколько страниц сайта назвали бренд. Прочерк — выдержек нет вовсе,
+// и это не ноль: «не нашли» и «не смотрели» нельзя показывать одинаково.
+// Процент считаем только от трёх страниц и больше: «1 из 1 · 100%»
+// читается как «весь сайт про нас», хотя это одна страница
+function brandSiteLabel(e: SourceEntry): string {
+  if (!e.checked) return "—";
+  const base = `${e.brandOnSite} из ${e.checked}`;
+  return e.checked < 3 ? base : `${base} · ${Math.round((e.brandOnSite / e.checked) * 100)}%`;
 }
 
 
@@ -1046,7 +1058,7 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
                   {e.domain}
                 </span>
                 <span style={{ fontSize: 12, color: T.faint }}>
-                  {brandSitePct(e) === null ? "фрагмент не пришёл" : `бренд на сайте ${brandSitePct(e)}%`}
+                  {e.checked ? `бренд на сайте ${brandSiteLabel(e)}` : "фрагмент не пришёл"}
                 </span>
               </div>
             ))}
@@ -1143,11 +1155,34 @@ function Dashboard({ run, runs, setRunId, slice, setSlice, onGo, fModel, setFMod
 }
 
 
+// Подсветка алиаса в выдержке со страницы. По образцу Highlight, но ищет
+// по алиасам, а не по названию бренда: видно, за что именно засчитана страница.
+function AliasMark({ text, aliases }: { text: string; aliases: string[] }) {
+  if (!aliases.length) return <>{text}</>;
+  const re = new RegExp(`(${aliases.map(escapeRe).join("|")})`, "gi");
+  return (
+    <>
+      {text.split(re).map((p, i) =>
+        aliases.some((a) => a.toLowerCase() === p.toLowerCase()) ? (
+          <mark key={i} style={{ background: T.accentSoft, color: T.accent, padding: "1px 3px", borderRadius: 3 }}>
+            {p}
+          </mark>
+        ) : (
+          <span key={i}>{p}</span>
+        )
+      )}
+    </>
+  );
+}
+
 // Экран «Источники». Собирается из тех же данных прогона, что и дашборд.
 // Домен считается один раз на ответ: две ссылки на один сайт в одном ответе —
 // это один источник, а не два.
 function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
   const rows = run.rows;
+  // Раскрыт один сайт за раз: на двух десятках доменов иначе выходит простыня
+  const [openDomain, setOpenDomain] = useState<string | null>(null);
+  const aliasList = parseAliases(brand.aliases);
   const brandDomains = brandDomainsOf(brand.aliases);
   const isOwn = (d: string | null) => isOwnDomain(d, brandDomains);
   const ownAnswers = rows.filter((r) => r.sources.some((s) => isOwn(s.domain))).length;
@@ -1213,11 +1248,20 @@ function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
                 </tr>
               </thead>
               <tbody>
-                {top.map((e) => (
-                  <tr key={e.domain} style={{ borderTop: `1px solid ${T.rule}` }}>
+                {top.map((e) => {
+                  const open = openDomain === e.domain;
+                  return (
+                  <React.Fragment key={e.domain}>
+                  <tr style={{ borderTop: `1px solid ${T.rule}` }}>
                     <td style={{ padding: "9px 12px 9px 0" }}>
                       {isOwn(e.domain) ? <Dot cat="brand" /> : null}
                       {e.domain}
+                      <button
+                        onClick={() => setOpenDomain(open ? null : e.domain)}
+                        style={{ border: "none", background: "none", padding: "0 0 0 10px", cursor: "pointer", font: `12px ${SANS}`, color: T.accent }}
+                      >
+                        {open ? "Свернуть" : "Показать фрагменты"}
+                      </button>
                     </td>
                     {run.models.map((id) => {
                       const v = e.byModel[id] || 0;
@@ -1231,10 +1275,31 @@ function Sources({ run, runs, setRunId, brand, MODELS }: SourcesProps) {
                     })}
                     <td style={{ textAlign: "center", padding: 5, fontVariantNumeric: "tabular-nums" }}>{e.answers}</td>
                     <td style={{ textAlign: "center", padding: 5, color: T.muted, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                      {brandSitePct(e) === null ? "—" : `${e.brandOnSite} из ${e.checked} · ${brandSitePct(e)}%`}
+                      {brandSiteLabel(e)}
                     </td>
                   </tr>
-                ))}
+                  {open && (
+                    <tr>
+                      <td colSpan={run.models.length + 3} style={{ padding: "2px 0 18px" }}>
+                        <p style={{ fontSize: 12, color: T.faint, margin: "0 0 10px" }}>
+                          Страницы этого сайта, которые процитировали модели. Подсвечено то, что совпало с алиасом.
+                        </p>
+                        {e.pages.map((pg) => (
+                          <div key={pg.url} style={{ padding: "0 0 12px 14px", borderLeft: `2px solid ${T.rule}`, marginBottom: 10 }}>
+                            <a href={pg.url} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: "underline", fontSize: 13 }}>
+                              {pg.title || pg.url}
+                            </a>
+                            <p style={{ fontSize: 13, lineHeight: 1.6, color: T.muted, margin: "6px 0 0", maxWidth: "80ch" }}>
+                              {pg.content ? <AliasMark text={pg.content} aliases={aliasList} /> : <span style={{ color: T.faint }}>фрагмент не пришёл</span>}
+                            </p>
+                          </div>
+                        ))}
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </section>
